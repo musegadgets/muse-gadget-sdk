@@ -36,6 +36,7 @@ warranties, brownouts, or bankruptcies. Proceed at your own risk!
 |---|---|
 | [**ESP32 Device SDK**](esp32) | Connect your ESP32 board to Muse through our open source SDK. Throw in a screen to show images, add audio in and out, or wire up other sensors. |
 | [**Linux Device SDK**](linux) | Turn that spare Raspberry Pi or Linux box into a Muse gadget. Hack in your own commands to let Muse handle sysadmin chores or your Home Assistant setup. |
+| [**Zephyr Device SDK**](zephyr) | A push-to-talk Bluetooth gadget for the Seeed XIAO nRF54L15 Sense: hold the button and talk to Muse, even offline. Runs on any Zephyr board with a button and a microphone. |
 
 Before you flash or pair a gadget, get an
 [SDK token](https://gadgets.muse.ai/settings/sdk-tokens) and review the
@@ -45,6 +46,9 @@ token to pair.
 ESP32 and Linux gadgets pair with the Muse app on iOS and Android, via
 Settings > Devices. Turn on Developer mode there first, then look for devices
 prefixed with "MuseGadget".
+
+The Zephyr gadget, and ESP32 boards with musegadgets BLE audio turned on,
+talk to the Muse app over the BLE protocol in [`protocols/`](protocols).
 Each directory has a `README.md` to get started and an `AGENTS.md` for coding
 agents like [Muse Code](https://developer.meta.com/ai/lp/muse-code/).
 
@@ -64,6 +68,8 @@ upstream licenses:
 |---|---|---|
 | [`esp32/components/minimp3/include/minimp3.h`](esp32/components/minimp3) | [lieff/minimp3](https://github.com/lieff/minimp3) | CC0-1.0, see [`LICENSE`](esp32/components/minimp3/LICENSE) |
 | [`esp32/main/pixel_font.c`](esp32/main/pixel_font.c) | Adafruit GFX `glcdfont.c` | BSD-2-Clause, in the file header |
+| [`xplat/libsbc`](xplat/libsbc) (built by `esp32/components/libsbc` and `zephyr/cmake/mg_common.cmake`) | [google/libsbc](https://github.com/google/libsbc) | Apache-2.0, Google's copyright, see [`LICENSE`](xplat/libsbc/LICENSE) |
+| [`xplat/liblc3`](xplat/liblc3) (built by `esp32/components/liblc3` and `zephyr/cmake/mg_common.cmake`) | [google/liblc3](https://github.com/google/liblc3) | Apache-2.0, Google's copyright, see [`LICENSE`](xplat/liblc3/LICENSE) |
 
 Dependencies fetched at build time are under their own licenses: ESP-IDF
 components (into `esp32/managed_components/`), and the simulator's LVGL and

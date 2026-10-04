@@ -1,0 +1,33 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/*
+ * Seeed XIAO nRF54L15 (Sense). The Sense's PDM microphone is on pdm20
+ * (dmic_dev in the board file), the user button is sw0 and the LED led0.
+ *
+ * The RRAM keeps the board's standard MCUboot map (nrf54l15_cpuapp_partition.dtsi):
+ * mcuboot 62 KB at 0, slot0 712 KB at 0x10000, slot1 712 KB at 0xc2000 and
+ * storage (settings) 36 KB at 0x174000. slot1 doubles as the offline clip
+ * queue while no firmware update needs it (src/mg_queue.h).
+ */
+
+/ {
+	zephyr,user {
+		/* VBAT through the board's 2:1 divider, switched on by P1.15 (vbat_pwr,
+		 * on from boot), on AIN7: channel 7 of the board's ADC node. */
+		io-channels = <&adc 7>;
+	};
+};
