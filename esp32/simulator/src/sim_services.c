@@ -204,6 +204,11 @@ bool muse_settings_ui_in_subpage(void)
     return false;
 }
 
+const char *muse_settings_ui_page_name(void)
+{
+    return "home";
+}
+
 void muse_menu_key(muse_menu_key_t key)
 {
     (void)key;

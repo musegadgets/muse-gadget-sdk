@@ -22,6 +22,8 @@
 
 #pragma once
 
+#include <stdint.h>
+
 #include "cJSON.h"
 
 // Start the voice task. It brings up the audio hardware and then takes over
@@ -31,3 +33,7 @@ void voice_init(void);
 // voice.configure: sets the speaker volume (0-100), kept in NVS. The dial on
 // top sets it too.
 cJSON *voice_configure_command(cJSON *params);
+
+// A musegadgets client's assistant_state (mg_assistant_state_t), for the LED
+// ring after a BLE turn (CONFIG_MUSE_GADGET_BLE_AUDIO). Any task.
+void voice_assistant_state(uint8_t state);

@@ -215,7 +215,7 @@ The fields of `muse_board_t`:
 | `keyboard` | Dedicated navigation keys: `poll_buttons` emits `MUSE_BTN_UP/DOWN/LEFT/RIGHT/ENTER/ESCAPE` presses. Enter selects and confirms pairing; Talk is not repurposed as Select while the menu is open. Defaults to false for two-button boards. |
 | `talk_button`, `aux_button` | On-screen captions ("boot", "pwr"). `talk_hint` and `aux_hint` place them next to the physical button |
 | `flat_menu_hints` | With `aux_hint` on `LV_ALIGN_RIGHT_MID` the menu turns that button's hint on end, drawn through a ~14 KB layer. Set it on a board that can't spare the RAM (the ESP32-C3): the hint lies flat on the menu's bar instead |
-| `frame_ms` | Avatar frame period: 40 on the S3 boards, 50 on the C6 |
+| `frame_ms` | Avatar frame period: 40 on the S3 boards, 50 on the C6. A mode change (a talk press) draws at once, not at the next frame |
 | `avatar_px` | Optional avatar canvas size in pixels; 0 uses the layout default |
 | `init` | Runs first: power latches, I2C bus, PMU |
 | `display_start` | Panel, LVGL and its task. Returns the display; leaves `*touch` NULL without touch |

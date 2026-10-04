@@ -167,6 +167,12 @@ static void set_fail(const char *why) {
 // ---- Wi-Fi ------------------------------------------------------------------
 
 static void op_wifi_status(muse_wifi_status_t *out) {
+#if CONFIG_MUSE_GADGET_BLE_STANDALONE
+    // A BLE-only gadget never brings Wi-Fi up.
+    memset(out, 0, sizeof(*out));
+    out->state = MUSE_WIFI_OFF;
+    return;
+#endif
     memset(out, 0, sizeof(*out));
     portENTER_CRITICAL(&s_lock);
     first_ssid_locked(out->ssid, sizeof(out->ssid));
@@ -619,6 +625,14 @@ void muse_glue_start(void) {
     s_ready = xEventGroupCreate();
     muse_link_register(&s_ops);
     muse_ble_set_name(identity_ble_name());
+#if CONFIG_MUSE_GADGET_BLE_STANDALONE
+    // A BLE-only gadget: no phone setup service (it configures Wi-Fi and the
+    // Muse session) and no keeper (it joins Wi-Fi).
+    (void)keeper_task;
+    if (xTaskCreate(boot_task, "muse_boot", 8192, NULL, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "failed to start Muse");
+    }
+#else
     ble_companion_t companion = {
         .svcs = muse_ble_services(),
         .configure_host = muse_ble_configure_host,
@@ -631,6 +645,7 @@ void muse_glue_start(void) {
         || xTaskCreate(keeper_task, "muse_keep", 6144, NULL, 4, &s_keeper) != pdPASS) {
         ESP_LOGE(TAG, "failed to start Muse tasks");
     }
+#endif
 }
 
 void muse_glue_storage_ready(void) {

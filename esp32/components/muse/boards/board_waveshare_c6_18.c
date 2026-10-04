@@ -24,18 +24,34 @@
  */
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
+#include "bsp/touch.h"
 #include "esp_check.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_touch.h"
 #include "esp_log.h"
+#include "esp_lv_adapter.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 #include "muse_audio.h"
 #include "muse_board.h"
+#include "muse_mem.h"
 #include "muse_pmu.h"
 
 static const char *TAG = "board";
 
 #define BOOT_GPIO GPIO_NUM_9
 #define PMU_KEY_EVERY 2         /* poll the PMU over I2C every 20 ms */
-#define DRAW_BUF_LINES 16       /* two of these: draw one while the other goes out over QSPI; 23 KB each would starve audio */
+/*
+ * Two draw buffers, LVGL drawing one while the other goes out over QSPI. Each
+ * strip costs a walk of the widget tree and a fresh start on every arc, label
+ * and image crossing it, so fewer, taller strips draw a frame much faster.
+ * Taller buffers trade RAM for fewer walks: 48 lines use about 47 KB more
+ * than 16 across both buffers. Keep normal builds at 16 for offline audio;
+ * BLE bench builds default to 48, with height configurable in sdkconfig.
+ * Buffers remain adapter-owned for their entire lifetime.
+ */
+#define DRAW_BUF_LINES CONFIG_MUSE_C6_DRAW_BUF_LINES
 
 static muse_gpio_button_t s_boot;
 
@@ -49,32 +65,166 @@ static esp_err_t init(void)
     return ESP_OK;
 }
 
+#if CONFIG_MUSE_PERF
+#include "muse_perf.h"
+
+/* Timestamps each touch interrupt for mg.perf, then hands it on to the adapter. */
+static esp_lcd_touch_interrupt_callback_t s_touch_irq;
+
+static void IRAM_ATTR touch_irq(esp_lcd_touch_handle_t tp)
+{
+    muse_perf_touch_irq();
+    s_touch_irq(tp);
+}
+
+static void watch_touch_irq(esp_lcd_touch_handle_t tp)
+{
+    if (tp && tp->config.interrupt_callback) {
+        s_touch_irq = tp->config.interrupt_callback;
+        esp_lcd_touch_register_interrupt_callback_with_data(tp, touch_irq, tp->config.user_data);
+    }
+}
+#endif
+
+/*
+ * LVGL runs through esp_lv_adapter like the S3 boards: its task on MUSE_UI_CORE
+ * (the only core) at MUSE_UI_PRIORITY, beside the audio and BLE tasks. Two
+ * changes for one core:
+ *
+ * - The draw thread renders while LVGL's task waits for it, so it gets the same
+ *   priority (LVGL's Kconfig caps CONFIG_LV_DRAW_THREAD_PRIO at 4); below it,
+ *   anything at 4 or 5 (BLE's worker, Link) would stall the frame mid-render.
+ * - LVGL waits for each QSPI transfer on a semaphore the transfer-done
+ *   interrupt gives. Otherwise it spins on a flag, which on one core takes the
+ *   CPU from everything below the UI for every strip in flight.
+ */
+static lv_display_t *s_disp;
+static SemaphoreHandle_t s_flush_done;
+
+static bool IRAM_ATTR flush_done(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *ev, void *ctx)
+{
+    (void)io;
+    (void)ev;
+    (void)ctx;
+    BaseType_t woken = pdFALSE;
+    xSemaphoreGiveFromISR(s_flush_done, &woken);
+    bool yield = esp_lv_adapter_display_notify_color_trans_done_from_isr(s_disp);
+    return yield || woken == pdTRUE;
+}
+
+/* LVGL may skip flush_wait if the adapter IRQ already cleared flushing.
+ * That leaves this binary semaphore's token unconsumed. FLUSH_START runs
+ * after the previous transfer was released and BEFORE submitting the next:
+ * discard its old token so it cannot release an in-flight future transfer. */
+static void flush_start(lv_event_t *e)
+{
+    (void)e;
+    xSemaphoreTake(s_flush_done, 0);
+}
+
+/* One give per flush: LVGL calls this only while a flush is outstanding. */
+static void flush_wait(lv_display_t *disp)
+{
+    (void)disp;
+    xSemaphoreTake(s_flush_done, portMAX_DELAY);
+}
+
+/* Both panels take whole pixel pairs (the BSP's rounder). */
+static void round_area(lv_event_t *e)
+{
+    lv_area_t *area = lv_event_get_param(e);
+    area->x1 &= ~1;
+    area->y1 &= ~1;
+    area->x2 |= 1;
+    area->y2 |= 1;
+}
+
 static lv_display_t *display_start(lv_indev_t **touch)
 {
-    lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
-    port_cfg.task_stack = 8192;
-    /* One core: drawing a 368x448 frame takes longer than a frame period, so
-     * keep LVGL at the bottom or it starves app_main and Wi-Fi setup. */
-    port_cfg.task_priority = 1;
-    const bsp_display_cfg_t cfg = {
-        .lvgl_port_cfg = port_cfg,
-        .buffer_size = BSP_LCD_H_RES * DRAW_BUF_LINES,
-        .double_buffer = true,
-        .flags = { .buff_dma = true, .buff_spiram = false },
+    esp_lv_adapter_config_t adapter_cfg = ESP_LV_ADAPTER_DEFAULT_CONFIG();
+    adapter_cfg.task_core_id = MUSE_UI_CORE;
+    adapter_cfg.task_priority = MUSE_UI_PRIORITY;
+    if (esp_lv_adapter_init(&adapter_cfg) != ESP_OK) {
+        return NULL;
+    }
+    TaskHandle_t draw = xTaskGetHandle("swdraw");   /* LVGL's software draw thread */
+    if (draw) {
+        vTaskPrioritySet(draw, MUSE_UI_PRIORITY);
+    }
+
+    esp_lcd_panel_handle_t panel;
+    esp_lcd_panel_io_handle_t io;
+    if (bsp_display_new(NULL, &panel, &io) != ESP_OK) {
+        return NULL;
+    }
+    s_flush_done = xSemaphoreCreateBinary();
+    if (!s_flush_done) {
+        return NULL;
+    }
+    esp_lv_adapter_set_default_display_idf_callback_registration_enabled(false);
+    const esp_lv_adapter_display_config_t disp_cfg = {
+        .panel = panel,
+        .panel_io = io,
+        .profile = {
+            .interface = ESP_LV_ADAPTER_PANEL_IF_OTHER,
+            .rotation = ESP_LV_ADAPTER_ROTATE_0,
+            .hor_res = BSP_LCD_H_RES,
+            .ver_res = BSP_LCD_V_RES,
+            .buffer_height = DRAW_BUF_LINES,
+            .use_psram = false,
+            .require_double_buffer = true,
+        },
+        .tear_avoid_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_NONE,
     };
-    lv_display_t *disp = bsp_display_start_with_config(&cfg);
-    *touch = bsp_display_get_input_dev();
-    return disp;
+    s_disp = esp_lv_adapter_register_display(&disp_cfg);
+    if (!s_disp) {
+        return NULL;
+    }
+    const esp_lcd_panel_io_callbacks_t cbs = { .on_color_trans_done = flush_done };
+    esp_lcd_panel_io_register_event_callbacks(io, &cbs, NULL);
+    lv_display_set_flush_wait_cb(s_disp, flush_wait);
+    lv_display_add_event_cb(s_disp, flush_start, LV_EVENT_FLUSH_START, NULL);
+    /* Draw in the panel's byte order, so each strip goes out as drawn instead
+     * of being swapped first (the adapter swaps only plain RGB565). */
+    lv_display_set_color_format(s_disp, LV_COLOR_FORMAT_RGB565_SWAPPED);
+    lv_display_add_event_cb(s_disp, round_area, LV_EVENT_INVALIDATE_AREA, NULL);
+
+    esp_lcd_touch_handle_t tp = NULL;
+    if (bsp_touch_new(NULL, &tp) == ESP_OK) {
+        const esp_lv_adapter_touch_config_t tp_cfg = ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(s_disp, tp);
+        *touch = esp_lv_adapter_register_touch(&tp_cfg);
+#if CONFIG_MUSE_PERF
+        watch_touch_irq(tp);
+#endif
+    } else {
+        ESP_LOGW(TAG, "no touch controller");
+    }
+    /* OLED brightness is a QSPI command on the same IO as pixel DMA, not
+     * an independent PWM. Finish it before the worker can submit a flush:
+     * SPI's bus lock does not serialize two tasks using the SAME device. */
+    if (bsp_display_brightness_init() != ESP_OK) {
+        return NULL;
+    }
+    if (esp_lv_adapter_start() != ESP_OK) {
+        return NULL;
+    }
+    ESP_LOGI(TAG, "C6 display ready: %d-line buffers", DRAW_BUF_LINES);
+    return s_disp;
 }
 
 static bool display_lock(int timeout_ms)
 {
-    return bsp_display_lock(timeout_ms < 0 ? 0 : timeout_ms);
+    return esp_lv_adapter_lock(timeout_ms) == ESP_OK;
 }
 
 static void set_brightness(int pct)
 {
-    bsp_display_brightness_set(pct);
+    /* The adapter mutex is recursive: safe both from its LVGL timers and
+     * from another task. Keep QSPI parameter commands out of pixel submits. */
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        bsp_display_brightness_set(pct);
+        esp_lv_adapter_unlock();
+    }
 }
 
 static esp_err_t audio_init(esp_codec_dev_handle_t *spk, esp_codec_dev_handle_t *mic)
@@ -125,7 +275,7 @@ static const muse_board_t s_board = {
     .init = init,
     .display_start = display_start,
     .display_lock = display_lock,
-    .display_unlock = bsp_display_unlock,
+    .display_unlock = esp_lv_adapter_unlock,
     .set_brightness = set_brightness,
     .audio_init = audio_init,
     .mic_slot = 0,              /* one mic, on the left slot */

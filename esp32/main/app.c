@@ -81,6 +81,12 @@
 #else
 #define WIFI_WITHOUT_PAIRING 0
 #endif
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+#include "mg_glue.h"
+#endif
+#if CONFIG_MUSE_GADGET_BLE_STANDALONE
+#include "mg_ble.h"
+#endif
 
 static const char *TAG = "link.app";
 static const char *HEARTBEAT_TAG = "link.heartbeat";
@@ -652,8 +658,9 @@ static void shutdown_ble_task(void *arg) {
     (void)arg;
     vTaskDelay(pdMS_TO_TICKS(1000));
     ui_set_ble("off");
-#if CONFIG_MUSE_ENABLED
-    // Muse's phone-setup service shares the server: stop setup advertising only.
+#if CONFIG_MUSE_ENABLED || CONFIG_MUSE_GADGET_BLE_AUDIO
+    // Muse's phone-setup service and musegadgets BLE audio share the server:
+    // stop setup advertising only.
     ble_server_stop_advertising(false);
 #else
     ble_server_full_shutdown();
@@ -679,7 +686,7 @@ static bool complete_setup_and_stop_ble(const char *reason, uint32_t session_gen
         ESP_LOGW(TAG, "failed to start BLE stop task");
         vTaskDelay(pdMS_TO_TICKS(1000));
         ui_set_ble("off");
-#if CONFIG_MUSE_ENABLED
+#if CONFIG_MUSE_ENABLED || CONFIG_MUSE_GADGET_BLE_AUDIO
         ble_server_stop_advertising(false);
 #else
         ble_server_full_shutdown();
@@ -2473,6 +2480,45 @@ static void *psram_malloc(size_t sz) {
     return p;
 }
 
+#if CONFIG_MUSE_GADGET_BLE_STANDALONE
+// A BLE-only musegadgets gadget (CONFIG_MUSE_GADGET_BLE_STANDALONE). Wi-Fi,
+// setup pairing and its advertising, the Muse session, the tunnel and OTA
+// never start, so their RAM stays free; Link's BLE server runs with no setup
+// callbacks and only the musegadgets companion advertises.
+static void __attribute__((noreturn)) run_ble_standalone(void) {
+    ESP_LOGI(TAG, "BLE-only musegadgets gadget: Wi-Fi and the Muse session stay off");
+    // Nothing here can confirm an OTA image the way the control session does;
+    // an image that got this far is good.
+    esp_ota_mark_app_valid_cancel_rollback();
+    setup_stage_set("ble-only");
+    ui_set_ble("musegadgets");
+    ble_server_start(identity_ble_name(), NULL);
+    s_ble_started = true;
+#if !CONFIG_MUSE_ENABLED
+    // Muse boards read their own buttons; the Link button only talks here.
+    if (!button_init(NULL, NULL, NULL)) {
+        ESP_LOGW(TAG, "button init failed");
+    }
+#endif
+#if CONFIG_HOMEHUB_VOICE
+    voice_init();
+#endif
+    heap_snapshot("ble-only ready");
+
+    stack_monitor_t stack = STACK_MONITOR_INIT;
+    for (;;) {
+        ESP_LOGI(HEARTBEAT_TAG, "hb t=%llds ble-only client=%s int=%uK/%uK min=%uK",
+                 esp_timer_get_time() / 1000000,
+                 mg_ble_connected() ? "connected" : "none",
+                 (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+                 (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
+                 (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024));
+        stack_monitor_record(&stack);
+        vTaskDelay(pdMS_TO_TICKS(30000));
+    }
+}
+#endif
+
 void app_run(void) {
     cJSON_Hooks hooks = { .malloc_fn = psram_malloc, .free_fn = free };
     cJSON_InitHooks(&hooks);
@@ -2494,6 +2540,9 @@ void app_run(void) {
     identity_init();
 #if CONFIG_MUSE_ENABLED
     muse_glue_storage_ready();
+#endif
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+    mg_glue_start();
 #endif
 
     const esp_app_desc_t *app_desc = esp_app_get_description();
@@ -2524,6 +2573,9 @@ void app_run(void) {
     led_status_set_state(LED_STATE_BOOT);
 
     heap_snapshot("after config+id");
+#if CONFIG_MUSE_GADGET_BLE_STANDALONE
+    run_ble_standalone();
+#endif
 
     wifi_mgr_init();
     heap_snapshot("after wifi_mgr_init");
@@ -2655,10 +2707,11 @@ void app_run(void) {
     } else {
         ui_set_ble("off");
         ESP_LOGI(TAG, "BLE setup disabled; long-press reset to pair again");
-#if CONFIG_MUSE_ENABLED && CONFIG_SPIRAM
+#if (CONFIG_MUSE_ENABLED && CONFIG_SPIRAM) || CONFIG_MUSE_GADGET_BLE_AUDIO
         // Muse may turn on its BLE companion later. The controller needs a
         // 30 KB internal block that TLS and the VM session leave fragmented,
         // so bring the stack up now; it stays silent until advertising is on.
+        // musegadgets BLE audio advertises from here on.
         start_ble_setup_server_if_needed();
 #endif
     }

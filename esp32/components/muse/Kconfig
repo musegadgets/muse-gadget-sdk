@@ -100,6 +100,21 @@ menu "Muse"
             depends on IDF_TARGET_ESP32C3
     endchoice
 
+    config MUSE_C6_DRAW_BUF_LINES
+        int "C6 display buffer height (lines)"
+        depends on MUSE_BOARD_WAVESHARE_C6_18
+        range 4 64
+        default 48 if MUSE_GADGET_BLE_STANDALONE && MUSE_PERF
+        default 16
+        help
+            Height of each of the two internal-RAM DMA buffers. More lines
+            reduce LVGL strip/walk overhead but take RAM from audio and offline
+            clips: every extra line costs 1472 bytes across the two buffers.
+            Keep the normal build at 16 until heap and gesture measurements
+            justify a larger value. BLE performance builds default to 48.
+            Set this in a per-build sdkconfig and rebuild to compare heights;
+            the live console cannot safely replace adapter-owned buffers.
+
     config MUSE_ENABLED
         bool
         default y if !MUSE_BOARD_NONE
@@ -176,6 +191,24 @@ menu "Muse"
             to GPIO2), L/R to GND, power to 3.3 V, and its SD line to a free
             GPIO, and set that GPIO here. -1 leaves push-to-talk recording
             silence.
+
+    config MUSE_PERF
+        bool "Log UI timing on mg.perf (bench)"
+        depends on MUSE_ENABLED
+        default n
+        help
+            Frame time (render, panel wait, flush), frames per second,
+            touch-to-redraw and talk-button-to-face latency, and each task's
+            share of the CPU, logged on mg.perf (and so on the Nordic UART
+            mirror). The CPU shares need FREERTOS_USE_TRACE_FACILITY and
+            FREERTOS_GENERATE_RUN_TIME_STATS. devices/sdkconfig.muse-bench
+            turns all three on.
+
+    config MUSE_PERF_PERIOD_MS
+        int "UI timing report period (ms)"
+        depends on MUSE_PERF
+        range 1000 60000
+        default 5000
 
     config MUSE_HATCH
         bool "Muse's own voice session"

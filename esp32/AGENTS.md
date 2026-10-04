@@ -63,6 +63,7 @@ before adding a feature to one.
 | AIPI Lite | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-aipi` | manual |
 | Waveshare ESP32-C6-Touch-AMOLED-1.8 | `esp32c6` | `devices/sdkconfig.muse;devices/sdkconfig.muse-waveshare-c6-18` | manual |
 | Waveshare ESP32-C6-Touch-AMOLED-2.06 | `esp32c6` | `devices/sdkconfig.muse;devices/sdkconfig.muse-waveshare-c6-206` | `tools/muse/board.sh build c6-206` |
+| Waveshare C6 1.8, BLE-only musegadgets gadget | `esp32c6` | the C6's, then `devices/sdkconfig.muse-waveshare-c6-18-ble` | `tools/muse/board.sh build c6ble` |
 | Seeed SenseCAP Watcher | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-sensecap-watcher` | manual |
 | M5Stack Cardputer ADV (experimental) | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-cardputer-adv` | `tools/muse/board.sh build cardputer-adv` |
 | M5Stack StickS3 | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-sticks3` | manual |
@@ -131,7 +132,7 @@ voice note that Muse answers in the app, and the dial sets the speaker volume
 
 ### Boards with the full UI, by hand
 
-`tools/muse/board.sh build|flash <s3|s3n|s3-216|aipi|box3|c6|c6-206|watcher|sticks3|plus2|cardputer-adv|stopwatch|cores3|core2|jc3248w535|lcd7|vn183|ai-passport> [SERIAL|PORT]`
+`tools/muse/board.sh build|flash <s3|s3n|s3-216|aipi|box3|c6|c6-206|c6ble|watcher|sticks3|plus2|cardputer-adv|stopwatch|cores3|core2|jc3248w535|lcd7|vn183|ai-passport> [SERIAL|PORT]`
 builds one board in `build-muse-<profile>/`, logs to
 `/tmp/muse_build_<board>.log`, and clears `managed_components/` before and
 after so it doesn't clash with other boards. When flashing, it finds the
@@ -151,7 +152,13 @@ turns on screenshots: `tools/muse/snap.py PORT KEYS OUT.png` sends bench keys
 and saves the screen, and `>face=thinking` (or `idle`, `listening`,
 `speaking`, `error`, `boot`, `off`, `happy`) in KEYS picks the avatar mode first.
 Screenshots are off in normal builds because each one takes a buffer the size
-of the screen. `>face=` works in any build. Or run `idf.py` directly:
+of the screen. The bench overlay also logs UI timing on `mg.perf` every 5 s
+(`CONFIG_MUSE_PERF`, `components/muse/muse_perf.h`): frames drawn and their
+rate, frame time split into render, panel wait and flush, pixels per frame,
+the avatar's frame tick, free internal RAM and each task's CPU share, plus a
+line per touch (interrupt, read, first flush, frame done) and per talk press
+(mode change, UI tick, first flush, frame done). On a musegadgets BLE build
+`tools/mg_ble_client.py log` shows them over the Nordic UART mirror. `>face=` works in any build. Or run `idf.py` directly:
 
 ```sh
 idf.py -B build-muse-aipi -DIDF_TARGET=esp32s3 \
@@ -416,6 +423,93 @@ To skip BLE Wi-Fi provisioning while you iterate, set
 `CONFIG_HOMEHUB_WIFI_SSID` and `CONFIG_HOMEHUB_WIFI_PASSWORD` in `menuconfig`.
 The device still needs to be paired once for its token.
 
+## musegadgets BLE audio
+
+`components/muse_gadget_ble` implements the musegadgets BLE protocol
+(`../protocols/mgcommands.h`): a phone, browser or gateway connects over BLE,
+turns on push-to-talk, and gets each utterance as SBC (the default) or LC3.
+Its `README.md` covers the design. Include the protocol header; never copy
+its constants.
+
+- **Turn it on** with `CONFIG_MUSE_GADGET_BLE_AUDIO=y` in the board's overlay
+  (the Waveshare S3 1.75C has it) or under "Muse Gadget BLE audio" in
+  `idf.py -B <dir> menuconfig`. Off, nothing changes. It needs a board with a
+  mic to be useful: the full-UI boards with PSRAM, and the Voice PE.
+- **Options:** the routing policy (`CONFIG_MUSE_GADGET_BLE_ROUTE_AUTO`,
+  `_BLE_ONLY`, `_WIFI_ONLY`), `CONFIG_MUSE_GADGET_BLE_LC3` (default on the S3
+  and ESP32 only: LC3 is floating point and the C6 and C5 have no FPU),
+  `CONFIG_MUSE_GADGET_BLE_QUEUE` (offline clips; needs the `mg_queue`
+  partition in `partitions_muse.csv`), and `CONFIG_MUSE_GADGET_BLE_NUS_LOG_TAGS`.
+- **It shares Link's BLE server** (`main/ble_server.c`) as a companion, like
+  Muse's phone setup: keep `ble_server_set_companion()` to two companions, and
+  keep Link's setup advertising and `ble_server_full_shutdown()` behaviour
+  unchanged for builds without it.
+- **Token proof:** `mg_command_token_proof` (34) (`mg_token_proof.c`, PSA
+  HMAC): the client proves it holds the key setup left, without sending the
+  token. It gates nothing. The board supplies the key and the clear
+  (`mg_ble_platform_t.proof_key`, `proof_clear`); without them it isn't
+  offered.
+- **BLE only:** `CONFIG_MUSE_GADGET_BLE_STANDALONE=y` makes a board a
+  musegadgets gadget and nothing else: `app_run()` hands over to
+  `run_ble_standalone()` before Wi-Fi, so Wi-Fi, Link setup and its
+  advertising, the Muse session, the tunnel and OTA never start, and
+  push-to-talk goes to the client or the offline queue (policy BLE only).
+  The Waveshare C6 has a profile for it: `tools/muse/board.sh build c6ble`
+  (`devices/sdkconfig.muse-waveshare-c6-18-ble`, SBC only). A
+  healthy boot logs `musegadgets BLE ready` and `BLE-only musegadgets gadget`,
+  and the heartbeat shows free internal RAM.
+- **Playback:** boards with a speaker (the boards with the full UI) offer
+  `mg_command_stream_audio`: SBC, PCM and (with LC3 on) LC3 from the client,
+  at 8 to 48 kHz resampled to 16 kHz, into a 16 KB ring
+  (`CONFIG_MUSE_GADGET_BLE_PLAY_BUFFER`) with buffer_update flow control.
+  Push-to-talk ends a stream with stop_streaming drop. The client reads and
+  sets the Muse speaker level with the `speaker_volume` setting (0 = off:
+  playback is then silent). Each stream logs its stats on `mg.play` (on the
+  Nordic UART mirror), including the level that reached the speaker. The
+  component README has the details, and what clients must do about their
+  stack's Write Without Response back-pressure.
+- **Face:** boards with a display or status light take `assistant_state`
+  from the client: listening, thinking after push-to-talk, then responding
+  (speaking), done (happy, then idle) or error, as the Wi-Fi path does, and
+  speaking while a client's audio plays; idle after 60 s without an update.
+  Face changes are logged on `mg.face` (on the Nordic UART mirror). Only
+  boards with a vibration motor (none yet) list `haptics_enabled` and the
+  `ptt_buzz_*` settings; `request_status` lists every accepted setting.
+- **Bench client:** `tools/mg_ble_client.py` (needs `pip install bleak` and a
+  C compiler) is a plaintext client for a Mac or Linux box:
+  `scan`, `test` (Device Information, Battery, request_status, settings, a
+  start_mic capture decoded to `mg_capture.wav`, queue status, and a 2 s
+  playback on boards with a speaker), `play` (`--tone HZ --secs N`,
+  `--sweep`, `--wav FILE`; `--volume N` sets the speaker level first;
+  `--loopback` records the mic while it plays and checks the tone comes
+  back, saving `mg_loopback.wav`), `ptt` (records
+  each button press to a WAV, then sends responding and done and prints the
+  face changes; `--no-states` skips that), `state <name>` (one
+  assistant_state), `queue --download` and `log` (the Nordic UART
+  mirror), `bench [--send SECS] [--recv SECS]` (raw throughput both ways with
+  `device_action throughput_test`), and `images` / `dfu` (MCUmgr SMP updates
+  on the Zephyr gadget). `test` round-trips every setting the board lists, checks the others
+  are refused. On macOS the terminal needs Bluetooth permission; a sandboxed agent
+  usually can't use Bluetooth.
+- **The Wi-Fi path stays as it was.** The push-to-talk loops only call into
+  `mg_voice.h` under `#if CONFIG_MUSE_GADGET_BLE_AUDIO`.
+- **Test** with the host tests below: `test_mg_ble` (protocol, routing,
+  queue, the token proof against `../protocols/test-vectors/mg-token-proof-v1.json`),
+  `test_mg_token_proof` (the same on the device's PSA code; needs `IDF_PATH`
+  like `test_link_pairing_handshake`), `test_mg_codecs` (SBC and LC3 round
+  trips), `test_mg_play`
+  (playback: resampler, ring, decoders) and `test_mg_ble_client` (the bench
+  client's parsing and decoding, and its `play` flow control against the
+  firmware's protocol code). Build the
+  board with it on and one without it. BLE isn't emulated in QEMU; on a board,
+  use `tools/mg_ble_client.py`.
+- **Vendored codecs** (`../xplat/libsbc`, `../xplat/liblc3`) are
+  Google's Apache-2.0 code, one copy shared with the Zephyr SDK;
+  `components/libsbc` and `components/liblc3` only build them. Keep their
+  `LICENSE` files and the modification notes in their headers, change them
+  only through compile-time options both SDKs can choose, and never vendor
+  LGPL code such as BlueZ's SBC.
+
 ## Configuration gotchas
 
 - Each build's generated `sdkconfig` lives in its build directory
@@ -537,7 +631,9 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 
 Run one `idf.py build` first: `test_link_discovery` compiles cJSON from
 `managed_components/`, and that directory only exists after a build. Set `CC`
-or `CXX` to change compilers.
+or `CXX` to change compilers. Set `IDF_PATH` (activating ESP-IDF does) so the
+real-crypto tests, `test_link_pairing_handshake` and `test_mg_token_proof`, run
+instead of skipping.
 
 Two tests skip quietly when their inputs are missing; check the summary for
 `skipped=`:

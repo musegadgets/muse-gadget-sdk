@@ -46,16 +46,24 @@ typedef struct {
 struct ble_gatt_svc_def;
 struct ble_gap_event;
 
-// A second GATT service sharing this server (Muse's phone setup). Set it before
-// ble_server_start(): configure_host runs before the host starts, and
-// on_gap_event sees every GAP event; its return value is the event's result.
+// Another GATT service sharing this server (Muse's phone setup, musegadgets BLE
+// audio). Add them before ble_server_start(), up to two: configure_host runs
+// before the host starts, and on_gap_event sees every GAP event; the first
+// non-zero return is the event's result. A companion with adv_uuid128 is
+// advertised with that UUID whenever wants_advertising() says so, taking
+// turns with Link's own advertising while both are wanted; call
+// ble_server_refresh_advertising() when its answer changes.
 typedef struct {
     const struct ble_gatt_svc_def *svcs;
     void (*configure_host)(void);
     int (*on_gap_event)(struct ble_gap_event *event);
+    const uint8_t *adv_uuid128;        // little-endian, or NULL
+    bool (*wants_advertising)(void);
 } ble_companion_t;
 
+// Adds a companion (NULL clears them).
 void ble_server_set_companion(const ble_companion_t *companion);
+void ble_server_refresh_advertising(void);
 // Keep advertising for the companion service even after setup is complete.
 void ble_server_set_companion_advertising(bool enabled);
 bool ble_server_is_started(void);

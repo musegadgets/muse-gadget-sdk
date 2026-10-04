@@ -1340,3 +1340,21 @@ bool muse_settings_ui_in_subpage(void)
 {
     return s_current != s_home;
 }
+
+const char *muse_settings_ui_page_name(void)
+{
+    const struct {
+        lv_obj_t *page;
+        const char *name;
+    } names[] = {
+        { s_home, "home" }, { s_wifi, "wifi" }, { s_hatch, "muse" }, { s_ble, "bluetooth" },
+        { s_sound, "sound" }, { s_sleep, "sleep" }, { s_battery, "battery" }, { s_power, "power" },
+        { s_text, "text" },
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (names[i].page && names[i].page == s_current) {
+            return names[i].name;
+        }
+    }
+    return "?";
+}

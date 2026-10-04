@@ -83,8 +83,15 @@ static bool s_synced = false;
 static bool s_advertising_enabled = false;
 static bool s_advertising_active = false;
 static bool s_plaintext_status_blocked = false;
-static ble_companion_t s_companion = {0};
+#define MAX_COMPANIONS 2
+static ble_companion_t s_companions[MAX_COMPANIONS];
+static int s_ncompanions = 0;
 static bool s_companion_advertising = false;
+// While Link's own advertising and a companion's UUID are both wanted, the
+// payload alternates between them every ADV_TURN_MS (legacy advertising fits
+// one 128-bit UUID).
+#define ADV_TURN_MS 1500
+static bool s_adv_turn = false;
 
 static SemaphoreHandle_t s_tx_mutex = NULL;
 static SemaphoreHandle_t s_rx_mutex = NULL;
@@ -100,6 +107,7 @@ static uint8_t s_rx_count = 0;
 static uint8_t s_rx_next_idx = 0;
 
 static void start_advertising(void);
+static const ble_companion_t *advertised_companion(void);
 
 // ---- Worker tasks for command dispatch -------------------------------------
 
@@ -803,8 +811,11 @@ void ble_server_full_shutdown(void) {
 
 static int gap_event_cb(struct ble_gap_event *event, void *arg) {
     int companion_rc = 0;
-    if (s_companion.on_gap_event && !s_shutting_down) {
-        companion_rc = s_companion.on_gap_event(event);
+    for (int i = 0; i < s_ncompanions && !s_shutting_down; i++) {
+        if (s_companions[i].on_gap_event) {
+            int rc = s_companions[i].on_gap_event(event);
+            if (rc && !companion_rc) companion_rc = rc;
+        }
     }
     switch (event->type) {
         case BLE_GAP_EVENT_CONNECT:
@@ -833,6 +844,15 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg) {
             if (s_cb.on_client_disconnected) s_cb.on_client_disconnected();
             if (!s_shutting_down && s_advertising_enabled) start_advertising();
             else if (!s_shutting_down && s_companion_advertising) start_advertising();
+            else if (!s_shutting_down && advertised_companion()) start_advertising();
+            break;
+        case BLE_GAP_EVENT_ADV_COMPLETE:
+            // A timed turn ended (see ADV_TURN_MS): the other payload's turn.
+            s_advertising_active = false;
+            if (!s_shutting_down && event->adv_complete.reason == BLE_HS_ETIMEOUT) {
+                s_adv_turn = !s_adv_turn;
+                start_advertising();
+            }
             break;
         case BLE_GAP_EVENT_SUBSCRIBE:
             if (event->subscribe.attr_handle == s_tx_handle) {
@@ -853,15 +873,32 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg) {
     return companion_rc;
 }
 
+// The companion whose UUID wants advertising now, if any.
+static const ble_companion_t *advertised_companion(void) {
+    for (int i = 0; i < s_ncompanions; i++) {
+        const ble_companion_t *c = &s_companions[i];
+        if (c->adv_uuid128 && c->wants_advertising && c->wants_advertising()) return c;
+    }
+    return NULL;
+}
+
 static void start_advertising(void) {
     if (s_shutting_down) return;
+    // A companion with its own UUID (musegadgets) is found after setup too.
+    const ble_companion_t *other = advertised_companion();
+    bool link = true;
     // The companion service keeps the device visible after setup.
     if (!s_companion_advertising) {
-        if (config_setup_complete()) return;
-        if (!s_advertising_enabled) return;
+        link = !config_setup_complete() && s_advertising_enabled;
+        if (!other) {
+            if (config_setup_complete()) return;
+            if (!s_advertising_enabled) return;
+        }
     }
     if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) return;
     if (s_advertising_active) return;
+    bool rotate = link && other;
+    bool show_other = other && (!link || s_adv_turn);
     struct ble_gap_adv_params advp = {0};
     advp.conn_mode = BLE_GAP_CONN_MODE_UND;
     advp.disc_mode = BLE_GAP_DISC_MODE_GEN;
@@ -869,14 +906,25 @@ static void start_advertising(void) {
     // Adv packet: flags + 128-bit service UUID + manufacturer data (~26 bytes).
     // Manufacturer data: 0xFFFF (test/unassigned company ID) + 1 byte paired flag.
     uint8_t mfg_data[] = { 0xFF, 0xFF, config_setup_complete() ? 0x01 : 0x00 };
+    ble_uuid128_t other_uuid;
 
     struct ble_hs_adv_fields adv = {0};
     adv.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-    adv.uuids128 = (ble_uuid128_t *)&SVC_UUID;
     adv.num_uuids128 = 1;
     adv.uuids128_is_complete = 1;
-    adv.mfg_data = mfg_data;
-    adv.mfg_data_len = sizeof(mfg_data);
+    if (show_other) {
+        other_uuid.u.type = BLE_UUID_TYPE_128;
+        memcpy(other_uuid.value, other->adv_uuid128, sizeof(other_uuid.value));
+        adv.uuids128 = &other_uuid;
+        // A companion is found for a long while, not only during setup:
+        // advertise at 100-150 ms rather than the fast default.
+        advp.itvl_min = BLE_GAP_ADV_ITVL_MS(100);
+        advp.itvl_max = BLE_GAP_ADV_ITVL_MS(150);
+    } else {
+        adv.uuids128 = (ble_uuid128_t *)&SVC_UUID;
+        adv.mfg_data = mfg_data;
+        adv.mfg_data_len = sizeof(mfg_data);
+    }
 
     int rc = ble_gap_adv_set_fields(&adv);
     if (rc != 0) {
@@ -895,13 +943,14 @@ static void start_advertising(void) {
         ESP_LOGW(TAG, "adv_rsp_set_fields rc=%d", rc);
     }
 
-    rc = ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER,
+    rc = ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, rotate ? ADV_TURN_MS : BLE_HS_FOREVER,
                            &advp, gap_event_cb, NULL);
     if (rc != 0) {
         ESP_LOGE(TAG, "adv_start rc=%d", rc);
     } else {
         s_advertising_active = true;
-        ESP_LOGI(TAG, "advertising as %s", s_device_name);
+        ESP_LOGI(TAG, "advertising as %s%s", s_device_name,
+                 rotate ? " (taking turns)" : show_other ? " (companion)" : "");
     }
 }
 
@@ -968,13 +1017,16 @@ void ble_server_start(const char *device_name, const ble_callbacks_t *cb) {
     rc = ble_gatts_add_svcs(ft);
     if (rc != 0) ESP_LOGE(TAG, "ft gatts_add_svcs rc=%d", rc);
 
-    if (s_companion.svcs) {
-        rc = ble_gatts_count_cfg(s_companion.svcs);
-        if (rc != 0) ESP_LOGE(TAG, "companion gatts_count_cfg rc=%d", rc);
-        rc = ble_gatts_add_svcs(s_companion.svcs);
-        if (rc != 0) ESP_LOGE(TAG, "companion gatts_add_svcs rc=%d", rc);
+    for (int i = 0; i < s_ncompanions; i++) {
+        const ble_companion_t *c = &s_companions[i];
+        if (c->svcs) {
+            rc = ble_gatts_count_cfg(c->svcs);
+            if (rc != 0) ESP_LOGE(TAG, "companion gatts_count_cfg rc=%d", rc);
+            rc = ble_gatts_add_svcs(c->svcs);
+            if (rc != 0) ESP_LOGE(TAG, "companion gatts_add_svcs rc=%d", rc);
+        }
+        if (c->configure_host) c->configure_host();
     }
-    if (s_companion.configure_host) s_companion.configure_host();
 
     ble_svc_gap_device_name_set(device_name);
 
@@ -1049,16 +1101,31 @@ void ble_server_stop_advertising(bool disconnect_client) {
         link_pairing_reset();
         s_plaintext_status_blocked = false;
     }
-    if (s_companion_advertising && s_synced) start_advertising();
+    // A companion may still want to be found (start_advertising decides).
+    if (s_synced) start_advertising();
 }
 
 void ble_server_set_companion(const ble_companion_t *companion) {
     if (s_started) return;
-    if (companion) {
-        s_companion = *companion;
+    if (!companion) {
+        memset(s_companions, 0, sizeof(s_companions));
+        s_ncompanions = 0;
+    } else if (s_ncompanions < MAX_COMPANIONS) {
+        s_companions[s_ncompanions++] = *companion;
     } else {
-        memset(&s_companion, 0, sizeof(s_companion));
+        ESP_LOGE(TAG, "too many BLE companions");
     }
+}
+
+void ble_server_refresh_advertising(void) {
+    if (!s_started || s_shutting_down || !s_synced) return;
+    if (s_advertising_active) {
+        // Restart with what's wanted now; a turn in progress ends early.
+        int rc = ble_gap_adv_stop();
+        if (rc != 0) ESP_LOGD(TAG, "adv_stop rc=%d", rc);
+        s_advertising_active = false;
+    }
+    start_advertising();
 }
 
 void ble_server_set_companion_advertising(bool enabled) {
@@ -1072,6 +1139,7 @@ void ble_server_set_companion_advertising(bool enabled) {
             ESP_LOGD(TAG, "adv_stop rc=%d", rc);
         }
         s_advertising_active = false;
+        if (s_synced) start_advertising();   // for a companion that advertises itself
     }
 }
 

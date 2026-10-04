@@ -38,6 +38,7 @@
 #include "muse_link.h"
 #include "muse_mem.h"
 #include "muse_menu.h"
+#include "muse_perf.h"
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_ui.h"
@@ -45,6 +46,9 @@
 #include "muse_wifi.h"
 #if CONFIG_MUSE_WATCHER_CAMERA
 #include "boards/watcher_camera.h"
+#endif
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+#include "mg_voice.h"
 #endif
 
 static const char *TAG = "muse_input";
@@ -79,6 +83,10 @@ static void post(muse_ptt_t type, bool wake)
     muse_input_event_t ev = { .type = type, .wake = wake };
     ESP_LOGI(TAG, "PTT %s%s", type == MUSE_PTT_DOWN ? "down" : "up", wake ? " (waking)" : "");
     xQueueSend(s_queue, &ev, 0);
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+    /* A connected musegadgets client hears every press, wherever the audio goes. */
+    mg_voice_gesture(type == MUSE_PTT_DOWN);
+#endif
 }
 
 static bool update_power(void);
@@ -448,6 +456,9 @@ static void input_task(void *arg)
         if (ev & (MUSE_BTN_TALK_PRESS | MUSE_BTN_TALK_RELEASE)) {
             ESP_LOGI(TAG, "talk key:%s%s", ev & MUSE_BTN_TALK_PRESS ? " press" : "",
                      ev & MUSE_BTN_TALK_RELEASE ? " release" : "");
+            if (ev & MUSE_BTN_TALK_PRESS) {
+                muse_perf_talk_press();
+            }
             talk_button(ev);
         }
         keyboard_buttons(ev);
@@ -667,6 +678,9 @@ static bool console_command(char *line, bool whole)
     if (!strncmp(line, "face=", 5)) {
         set_face(line + 5);
         return true;
+    }
+    if (muse_perf_console(line)) {
+        return true;   /* bench gestures: swipe=, drag=, tap=, mark= */
     }
     if (strncmp(line, "chat", 4) != 0) {
         return false;

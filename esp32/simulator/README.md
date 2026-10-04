@@ -82,6 +82,12 @@ CTest uses SDL's dummy video driver, validates command-line and scenario error
 handling, renders every included scenario twice, and checks that each pair of
 framebuffer captures is identical while different scenarios remain distinct.
 
+It also checks C6 bezel clipping against the original floating-point hook:
+360 complete framebuffer comparisons across translations, indicator angles,
+4/16/32/48/64-line strips, and both RGB565 byte orders. The integer fallback is
+checked over every radius 1–1024. These are pixel/geometry regressions, not
+measurements of C6 gesture FPS.
+
 For a checked build with AddressSanitizer and UndefinedBehaviorSanitizer:
 
 ```sh

@@ -17,6 +17,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -27,6 +28,9 @@
  * settings one swipe to the left. Also owns screen sleep and brightness.
  */
 esp_err_t muse_ui_start(void);
+/* What's on screen, for the bench: "face", "settings", "settings/sleep",
+ * "menu", "image". Under the display lock. */
+void muse_ui_page_name(char *buf, size_t n);
 
 /* From any task: the screen has gone dark for sleep (and not yet woken). */
 bool muse_ui_dark(void);

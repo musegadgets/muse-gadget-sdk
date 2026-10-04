@@ -33,3 +33,5 @@ void muse_settings_ui_tick(bool visible);
 
 /* True when a sub-page is open (the tileview must not steal horizontal swipes). */
 bool muse_settings_ui_in_subpage(void);
+/* The page on show, for the bench: "home", "wifi", "sleep" and so on. */
+const char *muse_settings_ui_page_name(void);

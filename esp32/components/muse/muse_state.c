@@ -25,6 +25,7 @@
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
 
+#include "muse_perf.h"
 #include "muse_text.h"
 
 #define HAPPY_SECS 1.6f
@@ -78,6 +79,7 @@ void muse_state_set_mode(muse_mode_t mode)
     }
     s_mode_since_us = esp_timer_get_time();
     s_mode = mode;
+    muse_perf_mode(mode);
 }
 
 muse_mode_t muse_state_mode(float *secs_in_mode)

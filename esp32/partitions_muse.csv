@@ -18,6 +18,11 @@
 # UI, audio and Hatch client needs more than 2 MB per slot, and NVS also
 # holds Muse settings and BLE bonds, so both are larger. prod_data/prod_bak
 # follow the app slots; these boards have no factory product parameters.
+# mg_queue (appended after them; nothing above moved) holds offline clips for
+# musegadgets BLE audio (CONFIG_MUSE_GADGET_BLE_QUEUE): 2 MB is about 4 minutes
+# of SBC or 8 of LC3. Builds without it leave it unused. OTA doesn't rewrite
+# the table, so a board updated over the air from an older table has no
+# mg_queue and simply doesn't offer the queue.
 nvs,       data, nvs,     0x11000,  0xC000,
 otadata,   data, ota,     0x1D000,  0x2000,
 phy_init,  data, phy,     0x1F000,  0x1000,
@@ -25,3 +30,4 @@ ota_0,     app,  ota_0,   0x20000,  4M,
 ota_1,     app,  ota_1,   0x420000, 4M,
 prod_data, data, 0x40,    0x820000, 0x1000,
 prod_bak,  data, 0x41,    0x821000, 0x1000,
+mg_queue,  data, 0x4D,    0x830000, 0x200000,

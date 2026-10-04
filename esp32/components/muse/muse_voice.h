@@ -17,6 +17,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
@@ -43,6 +44,12 @@ void muse_voice_request_loopback(void);
 
 /* Bench test: decodes and plays a built-in MP3 reply. */
 void muse_voice_request_mp3test(void);
+
+/*
+ * A musegadgets client's assistant_state (mg_assistant_state_t), for the
+ * face after a BLE turn; idle when it disconnects. Any task.
+ */
+void muse_voice_assistant_state(uint8_t state);
 
 /* Asleep with nothing to play: codecs off, Wi-Fi dozing. */
 bool muse_voice_resting(void);

@@ -65,3 +65,11 @@ CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y
 # actually slept, and how long each power lock kept the chip awake.
 CONFIG_PM_LIGHT_SLEEP_CALLBACKS=y
 CONFIG_PM_PROFILING=y
+
+# musegadgets BLE audio (components/muse_gadget_ble): a phone, browser or
+# gateway that connects over BLE and turns on push-to-talk gets the talk
+# button's audio as SBC or LC3; otherwise it goes to Muse over Wi-Fi as
+# before. Offline clips go to the mg_queue partition. The Muse app's BLE
+# setup can skip Wi-Fi (token-only), and the app runs the token proof on
+# every musegadgets connection.
+CONFIG_MUSE_GADGET_BLE_AUDIO=y

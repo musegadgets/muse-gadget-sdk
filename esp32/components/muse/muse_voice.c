@@ -17,6 +17,7 @@
 #include "muse_voice.h"
 
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,10 @@
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_wifi.h"
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+#include "mg_voice.h"
+#include "mgcommands.h"
+#endif
 
 static const char *TAG = "muse_voice";
 
@@ -429,10 +434,42 @@ static bool hatch_reply(bool *delivered)
     return false;
 }
 
+/*
+ * Mode changes of a musegadgets turn are logged on "mg.face", which the
+ * Nordic UART mirror carries, so a client can follow the face over BLE.
+ */
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+static const char *const FACE_NAMES[MUSE_MODE_COUNT] = {
+    [MUSE_MODE_BOOT] = "boot", [MUSE_MODE_IDLE] = "idle", [MUSE_MODE_LISTENING] = "listening",
+    [MUSE_MODE_THINKING] = "thinking", [MUSE_MODE_SPEAKING] = "speaking", [MUSE_MODE_ERROR] = "error",
+    [MUSE_MODE_OFF] = "off",
+};
+#endif
+
+static void set_mode(muse_mode_t mode)
+{
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+    if (muse_state_mode(NULL) != mode) {
+        char what[24];
+        snprintf(what, sizeof(what), "face %s", FACE_NAMES[mode]);
+        mg_voice_face(what);
+    }
+#endif
+    muse_state_set_mode(mode);
+}
+
+static void make_happy(void)
+{
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+    mg_voice_face("face happy");
+#endif
+    muse_state_make_happy();
+}
+
 static void go_idle(const char *caption)
 {
     muse_state_set_progress(0);
-    muse_state_set_mode(MUSE_MODE_IDLE);
+    set_mode(MUSE_MODE_IDLE);
     muse_state_set_caption("%s", caption);
 }
 
@@ -786,6 +823,210 @@ static bool can_record(void)
     return true;
 }
 
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+/*
+ * The face after a musegadgets utterance, as on the Wi-Fi path: thinking
+ * once push-to-talk ends, then what the client's assistant_state says
+ * (responding shows speaking, done the happy animation then idle, error the
+ * error face then idle), speaking while the client's audio plays whatever
+ * the last state was, and idle after 60 s without an update or when the
+ * client disconnects. A client that has never sent assistant_state (an older
+ * app) gets the happy animation and idle when its playback ends, instead of
+ * thinking again. The voice task applies it between presses.
+ */
+#define FACE_TIMEOUT_US (60LL * 1000000)
+#define FACE_ERROR_US (3LL * 1000000)
+
+typedef enum {
+    FACE_NONE,        /* no BLE turn: the voice loop's own face */
+    FACE_THINKING,
+    FACE_RESPONDING,
+    FACE_ERROR,
+} face_t;
+
+static volatile int s_face_pending = -1;   /* the client's latest mg_assistant_state_t, -1 none */
+static face_t s_face;
+static int64_t s_face_until;
+static bool s_face_playing;
+
+void muse_voice_assistant_state(uint8_t state)
+{
+    s_face_pending = state;
+    muse_state_nudge();   /* wakes a resting voice task */
+}
+
+static void face_show(face_t face)
+{
+    s_face = face;
+    int64_t now = esp_timer_get_time();
+    switch (face) {
+    case FACE_THINKING:
+        muse_state_set_caption("%s", "");
+        set_mode(MUSE_MODE_THINKING);
+        s_face_until = now + FACE_TIMEOUT_US;
+        break;
+    case FACE_RESPONDING:
+        muse_state_set_caption("%s", "");
+        set_mode(MUSE_MODE_SPEAKING);
+        s_face_until = now + FACE_TIMEOUT_US;
+        break;
+    case FACE_ERROR:
+        set_mode(MUSE_MODE_ERROR);
+        muse_state_set_caption("%s", "SOMETHING WENT WRONG");
+        s_face_until = now + FACE_ERROR_US;
+        break;
+    default:
+        go_idle("");
+        break;
+    }
+}
+
+/* Applies the client's state, playback and timeouts. */
+static void face_update(void)
+{
+    bool playing = mg_voice_playing();
+    if (playing != s_face_playing) {
+        s_face_playing = playing;
+        if (playing) {
+            set_mode(MUSE_MODE_SPEAKING);   /* whatever the last state was */
+        } else if (s_face_pending < 0 && !mg_voice_client_reports_state()) {
+            muse_state_set_level(0);
+            mg_voice_face("playback over, client sends no assistant_state");
+            s_face = FACE_NONE;
+            make_happy();
+            go_idle("");
+        } else {
+            muse_state_set_level(0);
+            if (s_face_pending < 0) {
+                face_show(s_face);          /* back to it */
+            }                               /* else the state sent during playback, below */
+        }
+    }
+    int pending = s_face_pending;
+    if (pending >= 0 && !playing) {   /* while playing, it waits for the end */
+        s_face_pending = -1;
+        switch (pending) {
+        case mg_assistant_state_thinking:
+            face_show(FACE_THINKING);
+            break;
+        case mg_assistant_state_responding:
+            face_show(FACE_RESPONDING);
+            break;
+        case mg_assistant_state_done:
+            /* The Wi-Fi path's end of a turn. */
+            s_face = FACE_NONE;
+            make_happy();
+            go_idle("");
+            break;
+        case mg_assistant_state_error:
+            face_show(FACE_ERROR);
+            break;
+        default:   /* idle: the turn is cancelled */
+            face_show(FACE_NONE);
+            break;
+        }
+    }
+    if (s_face != FACE_NONE && !playing && esp_timer_get_time() >= s_face_until) {
+        if (s_face != FACE_ERROR) {
+            mg_voice_face("no assistant_state for 60 s");
+        }
+        face_show(FACE_NONE);
+    }
+}
+
+/*
+ * One utterance to a musegadgets client over BLE, or into the offline queue
+ * for one (mg_voice.h picked the route). Push-to-talk starts with the
+ * pre-roll and runs to the release; capture the client started with
+ * start_mic runs until it sends stop_mic. There's no reply to play: the
+ * client has the audio.
+ */
+static void mg_turn(mg_route_t route, bool from_client, bool barge_in, bool wake)
+{
+    bool ble = route == MG_ROUTE_BLE;
+    set_mode(MUSE_MODE_LISTENING);
+    muse_state_set_progress(0);
+    muse_state_set_caption(ble ? "LISTENING (BLE)" : "RECORDING FOR LATER");
+    if (!mg_voice_begin(route, from_client)) {
+        go_idle(ble ? "BLE CLIENT NOT READY" : "COULDN'T RECORD");
+        return;
+    }
+    size_t n = 0;
+    if (!from_client && !barge_in) {
+        for (size_t i = 0; i < s_pre_fill; i++) {
+            pre_get(i, s_chunk);
+            mg_voice_audio(s_chunk, MUSE_AUDIO_CHUNK);
+            n += MUSE_AUDIO_CHUNK;
+        }
+    }
+    size_t held = 0;
+    size_t stop_at = from_client ? SIZE_MAX : MAX_FRAMES;
+    bool released = false;
+    while (held + MUSE_AUDIO_CHUNK <= stop_at) {
+        if (muse_audio_read(s_chunk, MUSE_AUDIO_CHUNK) != ESP_OK) {
+            break;
+        }
+        muse_state_set_level(muse_audio_level(s_chunk, MUSE_AUDIO_CHUNK));
+        held += MUSE_AUDIO_CHUNK;
+        if (!mg_voice_audio(s_chunk, MUSE_AUDIO_CHUNK)) {
+            break;   /* the client went, stopped it, or the queue's full */
+        }
+        if (!from_client) {
+            muse_state_set_progress((float)held / MAX_FRAMES);
+            if (!released && got_event(MUSE_PTT_UP)) {
+                released = true;
+                stop_at = held + TAIL_FRAMES < MAX_FRAMES ? held + TAIL_FRAMES : MAX_FRAMES;
+            }
+        } else {
+            got_event(MUSE_PTT_UP);   /* presses during client capture only go as gestures */
+        }
+    }
+    muse_state_set_level(0);
+    bool keep = from_client || wake || held >= MIN_HELD_FRAMES;
+    mg_voice_end(keep);
+    ESP_LOGI(TAG, "%s: %.2fs", ble ? "sent to the BLE client" : "queued for the BLE client",
+             (double)n / MUSE_AUDIO_RATE + (double)held / MUSE_AUDIO_RATE);
+    muse_state_set_progress(0);
+    if (!keep) {
+        face_show(FACE_NONE);
+        muse_state_set_caption("HOLD LONGER TO TALK");
+    } else if (!ble) {
+        /* Saved to the queue with nobody to answer: that's the end of it. */
+        s_face = FACE_NONE;
+        make_happy();
+        go_idle("SAVED FOR YOUR PHONE");
+    } else if (!from_client) {
+        /* The utterance is with the assistant now; assistant_state takes it from here. */
+        s_face_pending = -1;
+        face_show(FACE_THINKING);
+    } else {
+        /* A capture the client drove: it sends thinking itself if a turn follows. */
+        face_show(s_face);
+    }
+    s_face_playing = false;   /* face_update picks up playback again */
+}
+#endif
+
+/*
+ * The voice loop's own use of the speaker and mic (a turn, a chirp, a bench
+ * test) ends a musegadgets client's playback and holds new playback off
+ * until the loop is idle again.
+ */
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+static void claim_audio(bool claim)
+{
+    static bool claimed;
+    if (claim != claimed) {
+        claimed = claim;
+        mg_voice_claim(claim);
+    }
+}
+#define client_playing() mg_voice_playing()
+#else
+#define claim_audio(claim) ((void)0)
+#define client_playing() false
+#endif
+
 static void voice_task(void *arg)
 {
     bool pending_down = false;
@@ -794,15 +1035,29 @@ static void voice_task(void *arg)
         bool wake = false;
         if (!pending_down) {
             muse_input_event_t ev;
+            claim_audio(false);
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+            face_update();
+#endif
             bool asleep = muse_state_asleep();
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+            if (mg_voice_capture_requested()) {
+                set_resting(false);
+                mg_turn(MG_ROUTE_BLE, true, false, false);
+                pre_reset();
+                continue;
+            }
+#endif
             bool battery = muse_state_on_battery();
-            bool rest = asleep && battery && !s_chirp && !s_mp3test && !s_loopback;
+            /* A client's playback keeps the codecs on, asleep or not. */
+            bool rest = asleep && battery && !s_chirp && !s_mp3test && !s_loopback && !client_playing();
 #if HOLD_NOTES
             /* A press goes first: send_held() leaves it queued and returns
              * without backing off, so retrying before it's read would spin. */
             if (held_due() && !press_waiting()) {
                 set_resting(false);   /* full power while it goes, even asleep */
                 muse_wifi_power(MUSE_WIFI_FULL);
+                claim_audio(true);
                 pending_down = send_held(asleep);
                 pre_reset();
                 if (!pending_down && !asleep && muse_state_mode(NULL) != MUSE_MODE_IDLE) {
@@ -822,6 +1077,9 @@ static void voice_task(void *arg)
                  * Wi-Fi to send saved notes), so the CPU can stay asleep. */
                 muse_state_wait_awake(s_waiting ? HELD_POLL_MS : REST_BACKSTOP_MS);
                 continue;
+            }
+            if (s_chirp || s_mp3test || s_loopback) {
+                claim_audio(true);
             }
             if (s_chirp) {
                 s_chirp = false;
@@ -843,6 +1101,9 @@ static void voice_task(void *arg)
                 muse_audio_loopback_test(muse_settings_volume());
                 pre_reset();
             }
+            if (client_playing()) {
+                s_settle = SETTLE_CHUNKS;   /* the client's audio on the speaker isn't pre-roll */
+            }
             /* The 20 ms read paces this loop. */
             idle_capture();
             if (xQueueReceive(s_queue, &ev, 0) != pdTRUE) {
@@ -857,6 +1118,26 @@ static void voice_task(void *arg)
         if (wake && !held_on_waking()) {
             continue;   /* a tap: it only woke Muse */
         }
+        /* Push-to-talk takes the audio path: a client's playback stops (stop_streaming drop). */
+        claim_audio(true);
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+        /* The voice transport: this press goes to the BLE client, the offline queue, or Muse over Wi-Fi. */
+        mg_route_t route = mg_voice_route(muse_hatch_ready());
+        if (route == MG_ROUTE_BLE || route == MG_ROUTE_QUEUE) {
+            mg_turn(route, false, pending_down, wake);
+            pending_down = false;
+            pre_reset();
+            continue;
+        }
+        if (route == MG_ROUTE_NONE) {
+            pending_down = false;
+            go_idle("OPEN THE MUSE APP");
+            continue;
+        }
+        /* A Wi-Fi turn: it runs its own face from here. */
+        s_face = FACE_NONE;
+        s_face_pending = -1;
+#endif
         muse_wifi_power(MUSE_WIFI_FULL);
         if (!can_record()) {
             pending_down = false;

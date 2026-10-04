@@ -104,6 +104,26 @@ Boards without PSRAM (the ideaspark, the C6 boards and the Cardputer ADV) don't 
 | Over-the-air updates | Off | Off | Off | Off | Off | Off | Off | Off | Off | On | On | On | On | On | On | On | On | On | Off | On | On | On | On | On | Off | On | On | On | Off |
 | Buttons | BOOT | BOOT | BOOT | BOOT | Top | Green | Green | Centre (talk), dial | XIAO BOOT (talk/setup) | PWR (talk), BOOT | BOOT (talk), PWR | BOOT, PWR (talk), KEY (talk) on top | Two | BOOT (talk), PWR | BOOT (talk), PWR | Wheel (press to talk, turn to sleep) | Front (talk), side (menu), PWR | Front (talk), side (menu), PWR | GO/Space (talk), Esc/Enter/arrows (menu) | BOOT/CONFIG (talk) | Blue top-right (talk), yellow top-left (speaker), red bottom-left (power) | PWR (talk), RST | Touch BtnB (talk), PWR | BOOT (talk) | BOOT | BOOT (talk) | BOOT (talk), Vol+/Vol- (menu) | BOOT (flash only) | OK (talk), UP/DOWN (menu) |
 
+Push-to-talk over BLE is the musegadgets BLE protocol
+([`components/muse_gadget_ble`](../components/muse_gadget_ble/README.md)): an
+app connected over BLE that turns on push-to-talk gets the talk button's audio
+as SBC or LC3, and otherwise it goes to Muse over Wi-Fi as before. It's on for
+the Waveshare S3 1.75C. Other boards with a mic and PSRAM can opt in: add
+`CONFIG_MUSE_GADGET_BLE_AUDIO=y` to their overlay to try it (of them, only the
+Voice PE has been built with it, and none run). Offline clips need
+`partitions_muse.csv`, so the StickS3, StickC Plus2 and Voice PE don't offer
+them. The Cardputer ADV has no PSRAM.
+
+The Waveshare C6 has no PSRAM, so it can't run BLE audio beside Wi-Fi and the
+Muse session. Its BLE-only build (`tools/muse/board.sh build c6ble`, the
+[`sdkconfig.muse-waveshare-c6-18-ble`](sdkconfig.muse-waveshare-c6-18-ble)
+overlay) leaves those off and runs as a musegadgets gadget alone: the screen
+says `READY` only while the app is connected with push-to-talk on
+(`DISCONNECTED`, `CONNECTING` or `APP CONNECTED` otherwise, and `OPEN MUSE
+APP` until it's set up), and the talk button's audio goes
+to the app as SBC, or to the offline queue (clips of up to about 8 s) while no
+app is connected. Build the normal `c6` profile to go back.
+
 Boards without PSRAM (the ideaspark, the C6 boards, the Cardputer ADV and the AI Passport) don't have room for
 the home-network tunnel. Muse can still reach and control them once the
 control session is up. The Waveshare C6, Cardputer ADV and AI Passport also can't hold their own voice
@@ -477,6 +497,7 @@ board's overlays, in order:
 | AIPI Lite | `esp32s3` | [`devices/sdkconfig.muse`](sdkconfig.muse), [`devices/sdkconfig.muse-aipi`](sdkconfig.muse-aipi) | by hand |
 | Waveshare C6 1.8 | `esp32c6` | [`devices/sdkconfig.muse`](sdkconfig.muse), [`devices/sdkconfig.muse-waveshare-c6-18`](sdkconfig.muse-waveshare-c6-18) | by hand |
 | Waveshare C6 2.06 | `esp32c6` | [`devices/sdkconfig.muse`](sdkconfig.muse), [`devices/sdkconfig.muse-waveshare-c6-206`](sdkconfig.muse-waveshare-c6-206) | `tools/muse/board.sh build c6-206` |
+| Waveshare C6 1.8, BLE only | `esp32c6` | the C6's, then [`devices/sdkconfig.muse-waveshare-c6-18-ble`](sdkconfig.muse-waveshare-c6-18-ble) | `tools/muse/board.sh build c6ble` |
 | SenseCAP Watcher | `esp32s3` | [`devices/sdkconfig.muse`](sdkconfig.muse), [`devices/sdkconfig.muse-sensecap-watcher`](sdkconfig.muse-sensecap-watcher) | by hand |
 | M5Stack Cardputer ADV | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-cardputer-adv` | `tools/muse/board.sh build cardputer-adv` |
 | M5Stack StickS3 | `esp32s3` | [`devices/sdkconfig.muse`](sdkconfig.muse), [`devices/sdkconfig.muse-m5stack-sticks3`](sdkconfig.muse-m5stack-sticks3) | by hand |

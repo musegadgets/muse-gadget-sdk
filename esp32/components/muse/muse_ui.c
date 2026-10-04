@@ -15,6 +15,11 @@
  */
 
 #include "muse_ui.h"
+#include "sdkconfig.h"
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+#include "mg_ble.h"
+#include "mg_voice.h"
+#endif
 
 #include <math.h>
 #include <stdio.h>
@@ -38,9 +43,19 @@
 #include "muse_link.h"
 #include "muse_mem.h"
 #include "muse_menu.h"
+#include "muse_perf.h"
+#define MUSE_PIXEL_OPTIONAL_CELLS
 #include "muse_pixel.h"
+#undef MUSE_PIXEL_OPTIONAL_CELLS
+/* Optional: existing custom avatars only implement the strip-scaling API. */
+#if defined(__APPLE__)
+extern uint16_t muse_pixel_cell_rgb565(int x, int y) __attribute__((weak_import));
+#else
+extern uint16_t muse_pixel_cell_rgb565(int x, int y) __attribute__((weak));
+#endif
 #include "muse_settings.h"
 #include "muse_settings_ui.h"
+#include "muse_ring_clip.h"
 #include "muse_state.h"
 #include "muse_text.h"
 #include "muse_wifi.h"
@@ -138,7 +153,11 @@ static bool s_ready;
 static float s_level;
 static int s_shown_state = -1;
 static const char *s_shown_name;
+#if CONFIG_MUSE_GADGET_BLE_STANDALONE
+static const char *s_idle_name = "OPEN MUSE APP";   /* idle's label: set by the BLE client's state */
+#else
 static const char *s_idle_name = "READY";   /* idle's label: set by the Wi-Fi state */
+#endif
 static int s_shown_lit = -1;
 static uint32_t s_shown_accent;
 static bool s_meter_visible = true;
@@ -287,8 +306,11 @@ static void muse_image_init(void)
     dec->name = "muse";
 
     s_cells = heap_caps_malloc(MUSE_PX_W * MUSE_PX_H * sizeof(uint16_t), MUSE_BIG_CAPS);
-    s_cell_row = heap_caps_malloc(MUSE_PIXEL_MAX_PX * sizeof(uint16_t), MUSE_BIG_CAPS);
-    if (!s_cells || !s_cell_row) {
+    bool direct = muse_pixel_cell_rgb565 && s_canvas_px >= MUSE_PX_W;
+    if (!direct) {
+        s_cell_row = heap_caps_malloc(MUSE_PIXEL_MAX_PX * sizeof(uint16_t), MUSE_BIG_CAPS);
+    }
+    if (!s_cells || (!direct && !s_cell_row)) {
         free(s_cells);
         free(s_cell_row);
         s_cells = s_cell_row = NULL;   /* redraw all of Muse every frame */
@@ -297,8 +319,9 @@ static void muse_image_init(void)
 
 /*
  * Most frames change only a few of Muse's cells, so only those are redrawn.
- * Each frame reads back one screen pixel of every cell (its first, which the
- * faint grid never dims) and compares it with the last frame's. A row's
+ * Each frame reads each cell's undimmed RGB565 color and compares it with the
+ * last frame's. Custom avatars can omit that accessor: read back the cell's
+ * first screen pixel instead (the faint grid never dims it). A row's
  * changed cells make one span, and neighbouring spans merge while the pixels
  * drawn for nothing cost less than LVGL's walk of the widget tree for one more
  * area.
@@ -315,20 +338,25 @@ static int32_t rect_cells(const lv_area_t *r)
 
 static void invalidate_muse(void)
 {
-    if (!s_cells) {
+    int size = (int)s_muse_src.header.w;
+    bool direct = muse_pixel_cell_rgb565 && size >= MUSE_PX_W;
+    if (!s_cells || size < MUSE_PX_W || (!direct && !s_cell_row)) {
+        /* A sub-64 px canvas skips grid cells, so representative sampling is
+         * not meaningful (and a rounded-up sample can lie past the row). */
         lv_obj_invalidate(s_canvas);
         return;
     }
-    int size = (int)s_muse_src.header.w;
     lv_area_t r[MUSE_PX_H];   /* in cells */
     int n = 0;
     for (int cy = 0; cy < MUSE_PX_H; cy++) {
-        int32_t y = cell_px(cy, size);
-        muse_pixel_scale(s_cell_row, size, 0, size - 1, y, y);
+        if (!direct) {
+            int32_t y = cell_px(cy, size);
+            muse_pixel_scale(s_cell_row, size, 0, size - 1, y, y);
+        }
         uint16_t *last = &s_cells[cy * MUSE_PX_W];
         int x1 = -1, x2 = -1;
         for (int cx = 0; cx < MUSE_PX_W; cx++) {
-            uint16_t c = s_cell_row[cell_px(cx, size)];
+            uint16_t c = direct ? muse_pixel_cell_rgb565(cx, cy) : s_cell_row[cell_px(cx, size)];
             if (c != last[cx] || !s_cells_valid) {
                 last[cx] = c;
                 x1 = x1 < 0 ? cx : x1;
@@ -791,8 +819,8 @@ static void on_ring_draw(lv_event_t *e)
         int32_t y2 = LV_MIN(y + RING_SLAB_ROWS - 1, clip.y2);
         int32_t near = y <= cy && cy <= y2 ? 0 : LV_MIN(LV_ABS(y - cy), LV_ABS(y2 - cy));
         int32_t far = LV_MAX(LV_ABS(y - cy), LV_ABS(y2 - cy));
-        int32_t ow = near < out ? (int32_t)ceilf(sqrtf((float)(out * out - near * near))) : 0;
-        int32_t iw = far < hole ? (int32_t)sqrtf((float)(hole * hole - far * far)) : 0;
+        int32_t ow = muse_ring_outer_width(out, near);
+        int32_t iw = muse_ring_inner_width(hole, far);
         lv_area_t pieces[2] = {
             { cx - ow, y, iw ? cx - iw : cx + ow, y2 },
             { cx + iw, y, cx + ow, y2 },
@@ -1277,6 +1305,30 @@ static void update_chrome(float now)
     s_idle_name = idle_name(w.state);
     muse_ble_status_t b;
     muse_ble_status(&b);
+#if CONFIG_MUSE_GADGET_BLE_STANDALONE
+    /*
+     * A BLE-only gadget: the musegadgets client is the connection that
+     * matters. READY only with a client connected, subscribed (and
+     * authenticated) and push-to-talk on; the icons follow the same state.
+     */
+    mg_link_t link = mg_ble_link();
+    static const char *const LINK_LABEL[] = {
+        [MG_LINK_NEVER] = "OPEN MUSE APP",       /* nobody has set it up */
+        [MG_LINK_DISCONNECTED] = "DISCONNECTED",
+        [MG_LINK_CONNECTING] = "CONNECTING",     /* a link, but no client session yet */
+        [MG_LINK_SESSION] = "APP CONNECTED",     /* push-to-talk off */
+        [MG_LINK_READY] = "READY",
+    };
+    s_idle_name = link == MG_LINK_READY ? MODE_NAMES[MUSE_MODE_IDLE] : LINK_LABEL[link];
+    static mg_link_t s_shown_link = MG_LINK_NEVER;
+    if (link != s_shown_link) {
+        s_shown_link = link;
+        char what[40];
+        snprintf(what, sizeof(what), "label %s", LINK_LABEL[link]);
+        mg_voice_face(what);
+    }
+    b.state = link >= MG_LINK_SESSION ? MUSE_BLE_CONNECTED : MUSE_BLE_ADVERTISING;
+#endif
     const char *ble = b.state != MUSE_BLE_OFF ? LV_SYMBOL_BLUETOOTH : "";
     if (strcmp(ble, lv_label_get_text(s_ble_icon)) != 0) {
         lv_label_set_text(s_ble_icon, ble);
@@ -1288,6 +1340,10 @@ static void update_chrome(float now)
     muse_hatch_status_t h;
     muse_hatch_status(&h);
     bool paired = h.state != MUSE_HATCH_NOT_SET;
+#if CONFIG_MUSE_GADGET_BLE_STANDALONE
+    /* A BLE-only gadget never pairs with Muse itself: a client's session stands in. */
+    paired = link >= MG_LINK_SESSION;
+#endif
 
     /* The gadget's name, until it's paired. Emptied rather than hidden: the
      * read layout unhides it on the way out. A narrow screen gets the hex tail
@@ -1338,13 +1394,21 @@ static void update_chrome(float now)
     if (s_speaker && (int)speaker != s_shown_speaker) {
         show_speaker(speaker);
     }
-    if (s_speaker && (paired && muse_board->audio_init) == lv_obj_has_flag(s_speaker, LV_OBJ_FLAG_HIDDEN)) {
-        lv_obj_set_flag(s_speaker, LV_OBJ_FLAG_HIDDEN, !paired || !muse_board->audio_init);
+    /* A musegadgets client that takes push-to-talk (and plays replies) counts too. */
+    bool talks = paired;
+#if CONFIG_MUSE_GADGET_BLE_STANDALONE
+    talks = link == MG_LINK_READY;   /* a press goes nowhere else */
+#elif CONFIG_MUSE_GADGET_BLE_AUDIO
+    talks = talks || mg_ble_ptt_ready();
+#endif
+    talks = talks && muse_board->audio_init;
+    if (s_speaker && talks == lv_obj_has_flag(s_speaker, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_set_flag(s_speaker, LV_OBJ_FLAG_HIDDEN, !talks);
     }
     /* Unpaired, a press only says "SET UP MUSE FIRST", so the mic goes too.
      * While a reply's layout is up it decides; that's only ever paired. */
-    if (s_mic_icon && !muse_board->rim_controls && s_answer < 0 && (paired && muse_board->audio_init) == lv_obj_has_flag(s_mic_icon, LV_OBJ_FLAG_HIDDEN)) {
-        lv_obj_set_flag(s_mic_icon, LV_OBJ_FLAG_HIDDEN, !paired || !muse_board->audio_init);
+    if (s_mic_icon && !muse_board->rim_controls && s_answer < 0 && talks == lv_obj_has_flag(s_mic_icon, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_set_flag(s_mic_icon, LV_OBJ_FLAG_HIDDEN, !talks);
     }
 }
 
@@ -1547,12 +1611,27 @@ static void send_snapshot(void)
 #endif
 }
 
+void muse_ui_page_name(char *buf, size_t n)
+{
+    if (s_image_dsc.data) {
+        strlcpy(buf, "image", n);
+    } else if (!s_tv) {
+        strlcpy(buf, muse_menu_is_open() ? "menu" : "face", n);
+    } else if (lv_tileview_get_tile_active(s_tv) != s_settings) {
+        strlcpy(buf, "face", n);
+    } else if (muse_settings_ui_in_subpage()) {
+        snprintf(buf, n, "settings/%s", muse_settings_ui_page_name());
+    } else {
+        strlcpy(buf, "settings", n);
+    }
+}
+
 void muse_ui_request_snapshot(void)
 {
     s_snapshot = true;
 }
 
-static void frame_tick(lv_timer_t *timer)
+static void frame_tick_body(void)
 {
 #if LV_USE_SNAPSHOT
     if (s_bench_page >= 0) {
@@ -1566,13 +1645,13 @@ static void frame_tick(lv_timer_t *timer)
         s_snapshot = false;
         send_snapshot();
     }
-    (void)timer;
     image_sync();
     float mode_t;
     muse_mode_t mode = muse_state_mode(&mode_t);
     float now = (float)esp_timer_get_time() / 1e6f;
 
     if (mode != s_last_mode) {
+        muse_perf_face();
         if (mode == MUSE_MODE_LISTENING) {
             image_hide_locked();
             muse_ui_show_face();
@@ -1611,6 +1690,32 @@ static void frame_tick(lv_timer_t *timer)
     invalidate_muse();
 
     update_status(mode, now);
+}
+
+#define MODE_WATCH_MS 15   /* how soon the face answers a mode change: about one refresh */
+
+static lv_timer_t *s_frame_timer;
+
+/* The face's frame tick runs every frame_ms; a mode change (a talk press
+ * starting to listen) shouldn't wait up to a whole frame for it. */
+static void mode_watch(lv_timer_t *timer)
+{
+    (void)timer;
+    if (muse_state_mode(NULL) != s_last_mode) {
+        lv_timer_ready(s_frame_timer);
+    }
+}
+
+static void frame_tick(lv_timer_t *timer)
+{
+    (void)timer;
+#if CONFIG_MUSE_PERF
+    int64_t t0 = esp_timer_get_time();
+    frame_tick_body();
+    muse_perf_ui_tick(esp_timer_get_time() - t0);
+#else
+    frame_tick_body();
+#endif
 }
 
 esp_err_t muse_ui_start(void)
@@ -1660,7 +1765,9 @@ esp_err_t muse_ui_start(void)
         muse_menu_build(lv_screen_active(), s_w, s_h);
     }
     build_overlays();
-    lv_timer_create(frame_tick, muse_board->frame_ms, NULL);
+    s_frame_timer = lv_timer_create(frame_tick, muse_board->frame_ms, NULL);
+    lv_timer_create(mode_watch, MODE_WATCH_MS, NULL);
+    muse_perf_start(disp, s_indev);
     s_ready = true;
     muse_board->display_unlock();
 

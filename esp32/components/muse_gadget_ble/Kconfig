@@ -1,0 +1,115 @@
+menu "Muse Gadget BLE audio (musegadgets protocol)"
+
+    config MUSE_GADGET_BLE_AUDIO
+        bool "musegadgets BLE audio server"
+        depends on BT_NIMBLE_ENABLED
+        default n
+        help
+            Adds the musegadgets BLE protocol (protocols/mgcommands.h) to the
+            BLE server Home Link already runs: the musegadgets service
+            (Control and Data), Battery, Device Information and Nordic UART
+            (log mirror). A phone, browser or gateway that connects and turns
+            on push-to-talk gets each utterance as SBC or LC3 over BLE
+            instead of it going to Muse over Wi-Fi (see the routing policy
+            below). The BLE stack then stays up after setup, advertising the
+            musegadgets service. Off by default; nothing changes without it.
+
+    if MUSE_GADGET_BLE_AUDIO
+
+    config MUSE_GADGET_BLE_STANDALONE
+        bool "BLE-only gadget: no Wi-Fi, no Muse session"
+        depends on MUSE_ENABLED || HOMEHUB_VOICE
+        default n
+        help
+            Runs the board as a musegadgets BLE gadget and nothing else: Wi-Fi,
+            Home Link setup and its advertising, the Muse session over Wi-Fi,
+            the home-network tunnel and over-the-air updates are never
+            started, so their RAM stays free (what lets boards without PSRAM,
+            like the Waveshare C6, run it). Only the musegadgets services
+            (with Battery, Device Information and Nordic UART) advertise.
+            Push-to-talk goes to the connected client, else to the offline
+            queue, else it's refused.
+
+    choice MUSE_GADGET_BLE_ROUTE
+        prompt "Where push-to-talk goes"
+        depends on !MUSE_GADGET_BLE_STANDALONE
+        default MUSE_GADGET_BLE_ROUTE_AUTO
+        help
+            Decided once per press.
+
+        config MUSE_GADGET_BLE_ROUTE_AUTO
+            bool "BLE when a client takes it, else Wi-Fi"
+            help
+                A connected musegadgets client that turned on push-to-talk
+                gets the utterance. Otherwise it goes to Muse over Wi-Fi as
+                before. With neither, it's recorded to the offline queue if
+                the client turned the queue on.
+
+        config MUSE_GADGET_BLE_ROUTE_BLE_ONLY
+            bool "BLE only"
+            help
+                Never Wi-Fi: the client, else the offline queue, else the
+                press is refused.
+
+        config MUSE_GADGET_BLE_ROUTE_WIFI_ONLY
+            bool "Wi-Fi only"
+            help
+                Push-to-talk always goes to Muse over Wi-Fi. The client still
+                gets gestures and can capture with start_mic.
+    endchoice
+
+    config MUSE_GADGET_BLE_LC3
+        bool "LC3 codec"
+        default y if IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32
+        default n
+        help
+            Offer LC3 (16 kHz, 10 ms, 40-byte frames) beside SBC. LC3 is
+            floating point: about 8 MIPS on the S3, but about 85 MIPS on
+            RISC-V chips without an FPU (C6, C5). About 35 KB of flash.
+
+    config MUSE_GADGET_BLE_PLAY_BUFFER
+        int "Playback buffer (bytes)"
+        range 4096 65536
+        default 16384
+        help
+            Audio the client streams to the speaker (mg_command_stream_audio)
+            is held here, allocated only while a stream plays: 16 KB is 2 s
+            of 60 kb/s SBC, and 500 ms at the 256 kb/s maximum bitrate.
+
+    config MUSE_GADGET_BLE_SBC_BITPOOL
+        int "SBC bitpool"
+        range 2 64
+        default 26
+        help
+            16 kHz mono, 16 blocks, 8 subbands. 26 gives 60-byte frames
+            every 8 ms (60 kb/s), the quality of mSBC.
+
+    config MUSE_GADGET_BLE_QUEUE
+        bool "Offline clip queue"
+        default y
+        help
+            Record push-to-talk to flash while no client is connected, when
+            the client turned audio_queue_enabled on, and hand the clips over
+            later. Needs the mg_queue partition (partitions_muse.csv has
+            one); without it the queue isn't offered.
+
+    config MUSE_GADGET_BLE_MANUFACTURER
+        string "Manufacturer name (Device Information)"
+        default "Waveshare" if MUSE_BOARD_WAVESHARE_S3_175C || MUSE_BOARD_WAVESHARE_C6_18
+        default "Seeed Studio" if MUSE_BOARD_SENSECAP_WATCHER
+        default "M5Stack" if MUSE_BOARD_M5STACK_STICKS3 || MUSE_BOARD_M5STACK_STICKC_PLUS2
+        default "Nabu Casa" if HOMEHUB_VOICE
+        default "Espressif"
+
+    config MUSE_GADGET_BLE_NUS_LOG_TAGS
+        string "Log tags mirrored on the Nordic UART service"
+        default "mg,link.main,link.heartbeat"
+        help
+            Comma-separated tag prefixes, or * for the whole log. The
+            Nordic UART service has no security, so anyone nearby can read
+            it: keep tags that can log what people say or type (voice
+            transcripts, chat) out of it.
+
+    endif
+
+endmenu

@@ -20,6 +20,15 @@
 CONFIG_IDF_TARGET="esp32c6"
 CONFIG_MUSE_BOARD_WAVESHARE_C6_18=y
 CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=1
+# Room for every circle radius on screen at once (the bezel ring's two, the
+# settings cards', the icons'): with the default 4 they evict each other and
+# the 180 px ring's mask tables are rebuilt for every strip it crosses.
+CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE=16
+
+# Touch: read at 400 kHz, like the PMU on the same bus (the BSP's default is
+# 100 kHz), and only the one point the UI uses.
+CONFIG_BSP_I2C_CLK_SPEED_HZ=400000
+CONFIG_ESP_LCD_TOUCH_MAX_POINTS=1
 
 CONFIG_SPIRAM=n
 CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y

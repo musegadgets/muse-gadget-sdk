@@ -178,6 +178,9 @@ if(APPLE)
     # that framework in this configuration.
     find_library(MUSE_SIM_IOKIT_FRAMEWORK IOKit REQUIRED)
     target_link_libraries(muse_simulator PRIVATE ${MUSE_SIM_IOKIT_FRAMEWORK})
+    # Optional custom-avatar cell accessor: ELF weak references need no flag;
+    # Mach-O executables must allow the unresolved weak import explicitly.
+    target_link_options(muse_simulator PRIVATE "-Wl,-U,_muse_pixel_cell_rgb565")
 endif()
 
 target_compile_options(muse_simulator PRIVATE -Wall -Wextra -Wpedantic)
@@ -199,6 +202,20 @@ endif()
 include(CTest)
 if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_simulator.py")
     find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
+    add_executable(muse_ring_clip_test tests/muse_ring_clip_harness.c)
+    target_include_directories(muse_ring_clip_test PRIVATE "${MUSE_COMPONENT_DIR}")
+    target_compile_definitions(muse_ring_clip_test PRIVATE CONFIG_MUSE_BOARD_WAVESHARE_C6_18=1)
+    target_link_libraries(muse_ring_clip_test PRIVATE ${MUSE_SIM_LVGL_TARGET} ${MUSE_SIM_SDL_TARGET} Threads::Threads m)
+    target_compile_options(muse_ring_clip_test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME muse_ring_clip_pixels COMMAND muse_ring_clip_test)
+    set_tests_properties(muse_ring_clip_pixels PROPERTIES TIMEOUT 60)
+    if(APPLE)
+        target_link_libraries(muse_ring_clip_test PRIVATE ${MUSE_SIM_IOKIT_FRAMEWORK})
+    endif()
+    if(MUSE_SIM_SANITIZERS)
+        target_compile_options(muse_ring_clip_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(muse_ring_clip_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    endif()
     add_test(
         NAME muse_simulator_headless
         COMMAND "${Python3_EXECUTABLE}"
@@ -221,10 +238,13 @@ if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_simulator.py
             "UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1"
         )
     endif()
-    set_tests_properties(muse_simulator_headless PROPERTIES
+    set_tests_properties(muse_simulator_headless muse_ring_clip_pixels PROPERTIES
         ENVIRONMENT "${MUSE_SIM_TEST_ENVIRONMENT}"
         TIMEOUT 60
     )
+    # Debug/Sanitizer LVGL draws hundreds of full frames; leave CPU contention
+    # headroom when firmware builds are running alongside the test.
+    set_tests_properties(muse_ring_clip_pixels PROPERTIES TIMEOUT 180)
 endif()
 
 message(STATUS "Muse simulator LVGL target: ${MUSE_SIM_LVGL_TARGET}")

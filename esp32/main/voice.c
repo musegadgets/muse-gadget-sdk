@@ -35,6 +35,10 @@
 #include "voice_board.h"
 #include "voice_muse_chat.h"
 #include "voice_player.h"
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+#include "mg_voice.h"
+#include "mgcommands.h"
+#endif
 
 static const char *TAG = "link.voice";
 
@@ -57,6 +61,10 @@ static const char *TAG = "link.voice";
 typedef enum { EVT_PRESS, EVT_RELEASE } voice_evt_t;
 
 static QueueHandle_t s_events;
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+// Where the press being handled goes (mg_voice.h), decided on the button task.
+static volatile mg_route_t s_route = MG_ROUTE_WIFI;
+#endif
 static atomic_bool s_ready;
 static atomic_int s_volume;
 
@@ -199,8 +207,93 @@ static bool reply(void) {
     return false;
 }
 
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+// A press (or the client's start_mic) streamed to a musegadgets BLE client, or
+// recorded to the offline queue for one. No reply to play: the client has it.
+// The ring after a musegadgets utterance, as on the Wi-Fi path: thinking once
+// push-to-talk ends, then the client's assistant_state (responding: speaking,
+// done or idle: idle, error: the error colour for 3 s), idle after 60 s
+// without an update or when the client disconnects.
+#define RING_TIMEOUT_US (60LL * 1000000)
+#define RING_ERROR_US (3LL * 1000000)
+static volatile int s_ring_pending = -1;
+static bool s_ring_turn;
+static int64_t s_ring_until;
+
+void voice_assistant_state(uint8_t state) {
+    s_ring_pending = state;
+}
+
+static void ring(led_voice_t v, int64_t for_us, const char *name) {
+    led_status_set_voice(v);
+    s_ring_turn = v != LED_VOICE_IDLE;
+    s_ring_until = esp_timer_get_time() + for_us;
+    char what[24];
+    snprintf(what, sizeof(what), "ring %s", name);
+    mg_voice_face(what);
+}
+
+static void ring_update(void) {
+    int st = s_ring_pending;
+    if (st >= 0) {
+        s_ring_pending = -1;
+        switch (st) {
+        case mg_assistant_state_thinking: ring(LED_VOICE_THINKING, RING_TIMEOUT_US, "thinking"); break;
+        case mg_assistant_state_responding: ring(LED_VOICE_SPEAKING, RING_TIMEOUT_US, "responding"); break;
+        case mg_assistant_state_error: ring(LED_VOICE_ERROR, RING_ERROR_US, "error"); break;
+        default: ring(LED_VOICE_IDLE, 0, st == mg_assistant_state_done ? "done" : "idle"); break;
+        }
+    }
+    if (s_ring_turn && esp_timer_get_time() >= s_ring_until) ring(LED_VOICE_IDLE, 0, "idle");
+}
+
+static void mg_turn(mg_route_t route, bool from_client) {
+    static int16_t chunk[CAPTURE_CHUNK];
+    voice_player_stop();
+    led_status_set_level(0);
+    led_status_set_voice(LED_VOICE_LISTENING);
+    if (!mg_voice_begin(route, from_client) || voice_board_mic_start() != ESP_OK) {
+        mg_voice_end(false);
+        fail("BLE client not ready");
+        return;
+    }
+    size_t samples = 0;
+    int64_t stop_at = 0;
+    for (;;) {
+        voice_evt_t evt;
+        if (!from_client && !stop_at && xQueueReceive(s_events, &evt, 0) == pdTRUE && evt == EVT_RELEASE) {
+            stop_at = esp_timer_get_time() + RELEASE_TAIL_MS * 1000LL;
+        }
+        if ((stop_at && esp_timer_get_time() >= stop_at) || (!from_client && samples >= CAPTURE_MAX)) break;
+        int peak = 0;
+        size_t got = voice_board_mic_read(chunk, CAPTURE_CHUNK, &peak);
+        if (!got) break;
+        samples += got;
+        led_status_set_level(peak / 12000.0f);
+        if (!mg_voice_audio(chunk, got)) break;
+    }
+    voice_board_mic_stop();
+    bool keep = from_client || samples >= VOICE_MIC_RATE * CAPTURE_MIN_MS / 1000;
+    mg_voice_end(keep);
+    led_status_set_level(0);
+    if (keep && route == MG_ROUTE_BLE && !from_client) {
+        s_ring_pending = -1;
+        ring(LED_VOICE_THINKING, RING_TIMEOUT_US, "thinking");   // with the assistant now
+    } else {
+        ring(LED_VOICE_IDLE, 0, "idle");
+    }
+}
+#endif
+
 // Returns true if a new press interrupted the turn.
 static bool run_turn(void) {
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+    mg_route_t route = s_route;
+    if (route == MG_ROUTE_BLE || route == MG_ROUTE_QUEUE) {
+        mg_turn(route, false);
+        return false;
+    }
+#endif
     voice_player_stop();
     led_status_set_level(0);
     led_status_set_voice(LED_VOICE_LISTENING);
@@ -225,8 +318,18 @@ static bool on_press(bool pressed) {
     if (pressed) {
         if (!atomic_load(&s_ready) || voice_board_muted()) return false;
         voice_hatch_refresh();
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+        // The voice transport: this press goes to a BLE client, the offline
+        // queue, or Muse over Wi-Fi; if nowhere, the button keeps its setup role.
+        s_route = mg_voice_route(muse_hatch_ready());
+        if (s_route == MG_ROUTE_NONE || (s_route == MG_ROUTE_WIFI && !muse_hatch_ready())) return false;
+#else
         if (!muse_hatch_ready()) return false;
+#endif
     }
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+    mg_voice_gesture(pressed);
+#endif
     voice_evt_t evt = pressed ? EVT_PRESS : EVT_RELEASE;
     xQueueSend(s_events, &evt, 0);
     return true;
@@ -246,7 +349,17 @@ static void voice_task(void *arg) {
     ESP_LOGI(TAG, "ready");
 
     for (;;) {
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+        // A musegadgets client may start capture itself (start_mic).
+        if (mg_voice_capture_requested()) {
+            mg_turn(MG_ROUTE_BLE, true);
+            continue;
+        }
+        ring_update();
+        if (!pressed_again(pdMS_TO_TICKS(100))) continue;
+#else
         if (!pressed_again(portMAX_DELAY)) continue;
+#endif
         while (run_turn()) {
         }
     }

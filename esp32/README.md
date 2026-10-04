@@ -181,6 +181,7 @@ status screen.
 | AIPI Lite | UI, push-to-talk, two-button menu, images | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
 | Waveshare ESP32-C6-Touch-AMOLED-1.8 | UI, push-to-talk with text replies | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
 | Waveshare ESP32-C6-Touch-AMOLED-2.06 | UI, touch, push-to-talk with text replies | `tools/muse/board.sh build c6-206` |
+| Waveshare ESP32-C6-Touch-AMOLED-1.8, BLE only | UI, push-to-talk to the Muse app over BLE, no Wi-Fi | `tools/muse/board.sh build c6ble` |
 | Seeed SenseCAP Watcher | UI, push-to-talk, settings, images | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
 | M5Stack Cardputer ADV (experimental) | UI, GO/Space push-to-talk with text replies, Esc/Enter/arrow menu controls | `tools/muse/board.sh build cardputer-adv` |
 | M5Stack StickS3 | UI, push-to-talk, two-button menu, images | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
@@ -262,6 +263,17 @@ A few things worth knowing:
   delete the build directory so the change takes effect.
 - Builds are signed with the included development key and never turn on
   Secure Boot, so you can reflash your board as often as you like.
+- **Talk over BLE instead of Wi-Fi.** With `CONFIG_MUSE_GADGET_BLE_AUDIO`
+  (on for the Waveshare S3 1.75C), the device also speaks the musegadgets BLE
+  protocol in [`../protocols`](../protocols): an app that connects and turns on
+  push-to-talk gets your voice as SBC or LC3 audio, and the rest still goes to
+  Muse over Wi-Fi. On the Waveshare board the app pairs once, encrypted: check
+  the code on the screen and press the talk button. With
+  `CONFIG_MUSE_GADGET_BLE_STANDALONE` a board is a BLE gadget only, with Wi-Fi
+  off (the Waveshare C6 has a build for it), and `tools/mg_ble_client.py` tests
+  a gadget from your computer. The app can also play audio on a full-UI board's
+  speaker over BLE (`tools/mg_ble_client.py play` tries it). See
+  [`components/muse_gadget_ble`](components/muse_gadget_ble/README.md).
 
 ## Tests
 
@@ -295,6 +307,11 @@ their upstream licenses:
   decoder, is CC0-1.0. See [`components/minimp3/LICENSE`](components/minimp3/LICENSE).
 - [`main/pixel_font.c`](main/pixel_font.c), the Adafruit GFX font, is
   BSD-2-Clause, as its header says.
+- [`../xplat/libsbc`](../xplat/libsbc) and
+  [`../xplat/liblc3`](../xplat/liblc3), Google's SBC and LC3
+  codecs (shared with the Zephyr SDK, and built here by
+  `components/libsbc` and `components/liblc3`), are Apache-2.0 under Google's
+  copyright, with the changes noted in their headers. See each one's `LICENSE`.
 
 ESP-IDF components fetched at build time (into `managed_components/`) are
 under their own licenses.

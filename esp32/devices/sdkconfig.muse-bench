@@ -19,3 +19,29 @@
 # Screenshots ('p' over the serial console, tools/muse/snap.py): under 1 KB of
 # code, plus a buffer the size of the screen (RGB565) while taking one.
 CONFIG_LV_USE_SNAPSHOT=y
+
+# UI timing on mg.perf (components/muse/muse_perf.h): frame time, frame rate,
+# touch and talk-button latency, and each task's CPU share every 5 s. About
+# 4 KB of code and a 4 KB task; the run-time counters add a little to every
+# context switch.
+CONFIG_MUSE_PERF=y
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+
+# LVGL's profiler hooks into mg.perf (components/muse/lvprof): '>prof=on' adds
+# where each gesture's render time went, by LVGL function and draw task type.
+# Off until asked; each hook then costs a call and a test.
+CONFIG_LV_USE_PROFILER=y
+CONFIG_LV_USE_PROFILER_BUILTIN=n
+CONFIG_LV_PROFILER_INCLUDE="muse_lv_profiler.h"
+CONFIG_LV_PROFILER_LAYOUT=y
+CONFIG_LV_PROFILER_REFR=y
+CONFIG_LV_PROFILER_DRAW=y
+CONFIG_LV_PROFILER_INDEV=n
+CONFIG_LV_PROFILER_DECODER=y
+CONFIG_LV_PROFILER_FONT=n
+CONFIG_LV_PROFILER_FS=n
+CONFIG_LV_PROFILER_STYLE=n
+CONFIG_LV_PROFILER_TIMER=n
+CONFIG_LV_PROFILER_CACHE=n
+CONFIG_LV_PROFILER_EVENT=n
