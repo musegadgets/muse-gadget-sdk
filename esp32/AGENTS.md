@@ -493,7 +493,8 @@ its constants.
   boards with a vibration motor (none yet) list `haptics_enabled` and the
   `ptt_buzz_*` settings; `request_status` lists every accepted setting.
 - **Bench client:** `tools/mg_ble_client.py` (needs `pip install bleak` and a
-  C compiler) is a plaintext client for a Mac or Linux box:
+  C compiler; `setup` also `pip install bleak cryptography`) is a client for a
+  Mac or Linux box:
   `scan`, `test` (Device Information, Battery, request_status, settings, a
   start_mic capture decoded to `mg_capture.wav`, queue status, and a 2 s
   playback on boards with a speaker), `play` (`--tone HZ --secs N`,
@@ -502,11 +503,17 @@ its constants.
   back, saving `mg_loopback.wav`), `ptt` (records
   each button press to a WAV, then sends responding and done and prints the
   face changes; `--no-states` skips that), `state <name>` (one
-  assistant_state), `queue --download` and `log` (the Nordic UART
+  assistant_state), `setup [--access A --refresh R]` (Link setup as the Muse
+  app does it: community pairing v5, a press of the gadget's button, then
+  token-only `provision_v2` with the given or generated `bench-...` tokens;
+  it keeps the proof key in `~/.mg_ble_client/`, mode 0600), `proof
+  [--clear]` (the token proof with that key; `--clear` resets the gadget),
+  `queue --download` and `log` (the Nordic UART
   mirror), `bench [--send SECS] [--recv SECS]` (raw throughput both ways with
   `device_action throughput_test`), and `images` / `dfu` (MCUmgr SMP updates
   on the Zephyr gadget). `test` round-trips every setting the board lists, checks the others
-  are refused. On macOS the terminal needs Bluetooth permission; a sandboxed agent
+  are refused, and runs the token proof when `setup` left a key for the
+  gadget. On macOS the terminal needs Bluetooth permission; a sandboxed agent
   usually can't use Bluetooth.
 - **The Wi-Fi path stays as it was.** The push-to-talk loops only call into
   `mg_voice.h` under `#if CONFIG_MUSE_GADGET_BLE_AUDIO`.
@@ -517,8 +524,9 @@ its constants.
   `provision_v2`, the token-only commit and its rollback, BLE-only boot
   recovery), `test_mg_codecs` (SBC and LC3 round trips), `test_mg_play`
   (playback: resampler, ring, decoders) and `test_mg_ble_client` (the bench
-  client's parsing and decoding, and its `play` flow control against the
-  firmware's protocol code). Build the
+  client's parsing and decoding, its `play` flow control and token proof
+  against the firmware's protocol code, and its Link setup crypto against
+  `tests/vectors/link_pairing_v5.json`, which needs `cryptography`). Build the
   board with it on and one without it. BLE isn't emulated in QEMU; on a board,
   use `tools/mg_ble_client.py`.
 - **Vendored codecs** (`../xplat/libsbc`, `../xplat/liblc3`) are
