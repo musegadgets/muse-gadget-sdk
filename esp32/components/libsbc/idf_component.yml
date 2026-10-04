@@ -1,0 +1,6 @@
+# Google's SBC codec for musegadgets BLE audio. The sources are the one copy
+# in xplat/libsbc, shared with the Zephyr SDK (see its README.md); this
+# component only builds them for ESP-IDF.
+description: "Google's SBC codec (Apache-2.0), built from xplat/libsbc"
+url: "https://github.com/google/libsbc"
+license: "Apache-2.0"

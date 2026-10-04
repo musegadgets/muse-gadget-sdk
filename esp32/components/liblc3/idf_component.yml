@@ -1,0 +1,6 @@
+# Google's LC3 codec for musegadgets BLE audio. The sources are the one copy
+# in xplat/liblc3, shared with the Zephyr SDK (see its README.md); this
+# component only builds them for ESP-IDF.
+description: "Google's LC3 codec (Apache-2.0), built from xplat/liblc3"
+url: "https://github.com/google/liblc3"
+license: "Apache-2.0"
