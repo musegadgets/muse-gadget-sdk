@@ -108,9 +108,12 @@ Push-to-talk over BLE is the musegadgets BLE protocol
 ([`components/muse_gadget_ble`](../components/muse_gadget_ble/README.md)): an
 app connected over BLE that turns on push-to-talk gets the talk button's audio
 as SBC or LC3, and otherwise it goes to Muse over Wi-Fi as before. It's on for
-the Waveshare S3 1.75C, where the Muse app's setup can skip Wi-Fi and the app
-checks the gadget's token with the token proof on each connection. Other
-boards with a mic and PSRAM can opt in: add
+the Waveshare S3 1.75C with session security: pair the app once (compare the
+code on the screen and press the talk button); the board is in pairing mode
+while nothing is paired, and for two minutes after you turn on BLE phone
+setup. The Muse app's setup can skip Wi-Fi there, and the app checks the
+gadget's token with the token proof on each connection. Other boards with a
+mic and PSRAM can opt in: add
 `CONFIG_MUSE_GADGET_BLE_AUDIO=y` to their overlay to try it (of them, only the
 Voice PE has been built with it, and none run). Offline clips need
 `partitions_muse.csv`, so the StickS3, StickC Plus2 and Voice PE don't offer

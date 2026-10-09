@@ -29,6 +29,9 @@
 
 #include "app.h"
 #include "ble_server.h"
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+#include "mg_ble.h"
+#endif
 #include "config_store.h"
 #include "identity.h"
 #include "noise_control.h"
@@ -360,6 +363,11 @@ static int op_wifi_scan_results(muse_wifi_ap_t *out, int max, uint32_t *gen) {
 // ---- BLE, Hatch, setup -------------------------------------------------------
 
 static void op_ble_apply(void) {
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+    // Turning on BLE phone setup is also how the user lets a new
+    // musegadgets client pair (mgcommands-secure.h pairing mode).
+    if (muse_settings_ble_on()) mg_ble_open_pairing_window();
+#endif
     keeper_kick(KEEP_BLE);
 }
 

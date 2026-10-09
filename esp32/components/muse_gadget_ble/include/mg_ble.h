@@ -37,8 +37,9 @@ extern "C" {
  * Link's own setup advertising while both want to be found). One central at
  * a time: while an mg client is connected nothing else can connect.
  *
- * Services: musegadgets (Control, Data), Battery, Device Information, Nordic
- * UART (log mirror, CONFIG_MUSE_GADGET_BLE_NUS_LOG_TAGS).
+ * Services: musegadgets (Control, Data; with CONFIG_MUSE_GADGET_BLE_SECURE
+ * also Encrypted Control and Encrypted Data), Battery, Device Information,
+ * Nordic UART (log mirror, CONFIG_MUSE_GADGET_BLE_NUS_LOG_TAGS).
  */
 
 /* What the board supplies. Any callback may be NULL. */
@@ -55,7 +56,8 @@ typedef struct {
     void (*proof_clear)(void);
     int (*battery_pct)(void);            /* 0-100, or -1 without a battery */
     void (*mic_gain)(uint8_t gain);      /* set_mic_gain, 1-100 */
-    void (*attention)(void);             /* wake the screen: a capture request or playback */
+    bool display;                        /* can show a pairing code: offer numeric comparison */
+    void (*attention)(void);             /* wake the screen: a pairing prompt, capture request or playback */
     void (*refresh_advertising)(void);   /* the host server re-reads mg_ble_wants_advertising() */
     /*
      * Plays 16 kHz mono PCM, blocking at the speaker's pace (the board's
@@ -100,6 +102,19 @@ void mg_ble_init(const mg_ble_platform_t *platform);
 
 /* Link setup stored or erased the proof key: re-reads whether the gadget is set up. */
 void mg_ble_setup_changed(void);
+
+/* ---- pairing (session security) ---- */
+typedef struct {
+    uint8_t method;   /* mg_pairing_method_t; 0: nothing to show */
+    uint32_t code;    /* for numeric comparison, 0..999999 */
+} mg_ble_prompt_t;
+
+/* True while a pairing waits for the user; fills *out. */
+bool mg_ble_pairing_prompt(mg_ble_prompt_t *out);
+/* A press of the talk button. True if it answered a pairing prompt (swallow it). */
+bool mg_ble_confirm_press(void);
+/* The user asked to pair a new client (pairing mode for two minutes). */
+void mg_ble_open_pairing_window(void);
 
 /* An mg client is connected (not necessarily ready for audio). */
 bool mg_ble_connected(void);

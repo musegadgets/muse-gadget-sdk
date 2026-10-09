@@ -23,8 +23,11 @@ headers; don't copy their constants into other files.
 |---|---|
 | [`mgcommands.h`](mgcommands.h) | The musegadgets BLE protocol: advertising, the GATT service (Control and Data), the required standard services (Battery, Device Information, Nordic UART), commands, push-to-talk, audio formats, offline clips and the token proof. |
 | [`test-vectors/mg-token-proof-v1.json`](test-vectors/mg-token-proof-v1.json) | Token proof vectors, from [`test-vectors/mg_token_proof_ref.py`](test-vectors/mg_token_proof_ref.py) (Python standard library only; run it to check the file). |
+| [`mgcommands-secure.h`](mgcommands-secure.h) | Optional session security on top of it, at the numbers mgcommands.h reserves: key exchange, application-layer encryption on the Encrypted Control and Encrypted Data characteristics, pairing and authentication. The token proof runs on Encrypted Control after authentication. |
+| [`test-vectors/mgcommands-secure-v1.json`](test-vectors/mgcommands-secure-v1.json) | Session security vectors, from [`test-vectors/mg_secure_ref.py`](test-vectors/mg_secure_ref.py) (needs `cryptography`). |
 
-The header is plain C99 and also compiles as C++ and Objective-C, where the
+A device without session security implements `mgcommands.h` alone. The
+headers are plain C99 and also compile as C++ and Objective-C, where the
 enums become `NS_ENUM`s that Swift can import.
 
 ## Gadget setup over Muse Link

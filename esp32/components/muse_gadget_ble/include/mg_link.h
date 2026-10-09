@@ -19,12 +19,13 @@
 /*
  * Where the musegadgets client is, for the screen and the log
  * (mg_ble_link()). Ready, and only ready, means a client is connected,
- * subscribed to Control and Data and has push-to-talk on.
+ * subscribed to Control and Data (the encrypted ones, after authentication,
+ * on a secure build) and has push-to-talk on.
  */
 typedef enum {
     MG_LINK_NEVER,           /* no client since boot, and no proof key: nobody has set it up */
     MG_LINK_DISCONNECTED,    /* no connection */
-    MG_LINK_CONNECTING,      /* connected, not yet subscribed */
+    MG_LINK_CONNECTING,      /* connected, not yet subscribed (or authenticated) */
     MG_LINK_SESSION,         /* a client's session is up, push-to-talk off */
     MG_LINK_READY,           /* ...and push-to-talk on */
 } mg_link_t;

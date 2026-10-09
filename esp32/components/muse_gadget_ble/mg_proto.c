@@ -22,8 +22,11 @@
 #include "mg_codec.h"
 #include "mg_token_proof.h"
 #include "mgcommands.h"
+#if MG_WITH_SECURE
+#include "mgcommands-secure.h"
+#endif
 
-#define MAX_MSG 96   /* largest Control message the device sends */
+#define MAX_MSG 96   /* largest plaintext Control message the device sends */
 
 #define DEFAULT_BUZZ_FREQ_HZ 210
 #define DEFAULT_BUZZ_MS 100
@@ -67,6 +70,11 @@ static bool proof_supported(const mg_proto_t *p)
     return p->ops.proof_key && p->ops.proof_clear && p->ops.random;
 }
 
+static bool secure(const mg_proto_t *p)
+{
+    return MG_WITH_SECURE && p->cfg.secure;
+}
+
 /* ---- sending ------------------------------------------------------------ */
 
 static bool raw(mg_proto_t *p, mg_ch_t ch, const uint8_t *d, size_t n)
@@ -74,20 +82,67 @@ static bool raw(mg_proto_t *p, mg_ch_t ch, const uint8_t *d, size_t n)
     return p->connected && p->sub[ch] && p->ops.notify && p->ops.notify(p->ops.ctx, ch, d, n);
 }
 
+#if MG_WITH_SECURE
+/* Seals one payload for an encrypted characteristic and sends it. */
+static bool sealed(mg_proto_t *p, bool data, const uint8_t *d, size_t n)
+{
+    int i = data ? 1 : 0;
+    uint8_t frame[MG_FRAME_OVERHEAD + 256];
+    if (n > sizeof(frame) - MG_FRAME_OVERHEAD || !p->sub[data ? MG_CH_ENC_DATA : MG_CH_ENC_CONTROL]) {
+        return false;
+    }
+    if (p->tx_seq[i] == UINT32_MAX) {
+        /* A sender that would wrap disconnects. */
+        if (p->ops.disconnect) {
+            p->ops.disconnect(p->ops.ctx);
+        }
+        return false;
+    }
+    if (!mg_crypto_seal(&p->crypto, data ? MG_KEY_D2C_DATA : MG_KEY_D2C_CONTROL, p->tx_seq[i], d, n, frame)) {
+        return false;
+    }
+    if (!raw(p, data ? MG_CH_ENC_DATA : MG_CH_ENC_CONTROL, frame, n + MG_FRAME_OVERHEAD)) {
+        return false;   /* not sent: the seq is still free */
+    }
+    p->tx_seq[i]++;
+    return true;
+}
+#endif
+
+/* A Control message: encrypted once encryption is on (or in reply on Encrypted Control). */
 static bool send_control(mg_proto_t *p, const uint8_t *d, size_t n)
 {
+#if MG_WITH_SECURE
+    if (secure(p) && (p->encrypted || p->reply_ch == MG_CH_ENC_CONTROL)) {
+        return sealed(p, false, d, n);
+    }
+#endif
     return raw(p, MG_CH_CONTROL, d, n);
 }
 
 static bool send_data(mg_proto_t *p, const uint8_t *d, size_t n)
 {
+#if MG_WITH_SECURE
+    if (secure(p)) {
+        return p->encrypted && sealed(p, true, d, n);
+    }
+#endif
     return raw(p, MG_CH_DATA, d, n);
+}
+
+static void send_error_on(mg_proto_t *p, mg_ch_t ch, uint8_t cmd, uint16_t code)
+{
+    uint8_t m[5] = { mg_command_error, cmd, mg_error_data_code, (uint8_t)code, (uint8_t)(code >> 8) };
+    if (ch == MG_CH_CONTROL) {
+        raw(p, MG_CH_CONTROL, m, sizeof(m));
+    } else {
+        send_control(p, m, sizeof(m));
+    }
 }
 
 static void send_error(mg_proto_t *p, uint8_t cmd, uint16_t code)
 {
-    uint8_t m[5] = { mg_command_error, cmd, mg_error_data_code, (uint8_t)code, (uint8_t)(code >> 8) };
-    send_control(p, m, sizeof(m));
+    send_error_on(p, p->reply_ch, cmd, code);
 }
 
 static void send_data_type(mg_proto_t *p)
@@ -122,6 +177,13 @@ static void send_features(mg_proto_t *p)
         m[n++] = mg_command_token_proof;
     }
     m[n++] = mg_command_device_action;
+#if MG_WITH_SECURE
+    if (secure(p)) {
+        m[n++] = mg_command_key_exchange;
+        m[n++] = mg_command_enable_encryption;
+        m[n++] = mg_command_authenticate;
+    }
+#endif
     send_control(p, m, n);
 
     n = 0;
@@ -130,6 +192,22 @@ static void send_features(mg_proto_t *p)
     m[n++] = mg_command_start_mic;
     n += mg_codec_list(m + n, sizeof(m) - n);
     send_control(p, m, n);
+
+#if MG_WITH_SECURE
+    if (secure(p)) {
+        uint8_t kx[] = { mg_command_supported_features, mg_command_sub_feature, mg_command_key_exchange,
+                         mg_crypto_suite_x25519_aes256gcm_sha256 };
+        send_control(p, kx, sizeof(kx));
+        n = 0;
+        m[n++] = mg_command_supported_features;
+        m[n++] = mg_command_sub_feature;
+        m[n++] = mg_command_authenticate;
+        for (int i = 0; i < p->cfg.n_methods; i++) {
+            m[n++] = p->cfg.methods[i];
+        }
+        send_control(p, m, n);
+    }
+#endif
 
     /* Every setting get_settings and set_settings accept. */
     n = 0;
@@ -156,6 +234,20 @@ static void reset_connection(mg_proto_t *p)
     p->tp.mode = 0;   /* a throughput test ends with the connection, unreported */
     p->tp.armed = false;
     proof_reset(p);
+#if MG_WITH_SECURE
+    mg_crypto_session_end(&p->crypto);
+    mg_crypto_wipe(p->dev_priv, sizeof(p->dev_priv));
+    mg_crypto_wipe(&p->keys, sizeof(p->keys));
+    p->kx = MG_KX_NONE;
+    p->encrypted = p->authed = false;
+    p->auth_failures = 0;
+    memset(p->tx_seq, 0, sizeof(p->tx_seq));
+    memset(p->rx_any, 0, sizeof(p->rx_any));
+    memset(p->rx_last, 0, sizeof(p->rx_last));
+    p->have_key_id = false;
+    p->pair_method = 0;
+    p->pair_device_ok = p->pair_client_ok = false;
+#endif
     memset(p->sub, 0, sizeof(p->sub));
     p->mtu = 23;
     p->ptt_enabled = false;
@@ -165,6 +257,7 @@ static void reset_connection(mg_proto_t *p)
     p->live = false;
     p->reports_state = false;
     p->transfer = false;
+    p->reply_ch = MG_CH_CONTROL;
 }
 
 void mg_proto_init(mg_proto_t *p, const mg_proto_config_t *cfg, const mg_proto_ops_t *ops,
@@ -172,6 +265,9 @@ void mg_proto_init(mg_proto_t *p, const mg_proto_config_t *cfg, const mg_proto_o
 {
     memset(p, 0, sizeof(*p));
     p->cfg = *cfg;
+    if (!MG_WITH_SECURE) {
+        p->cfg.secure = false;
+    }
     p->ops = *ops;
     if (settings) {
         p->settings = *settings;
@@ -192,6 +288,20 @@ const mg_settings_t *mg_proto_settings(const mg_proto_t *p)
     return &p->settings;
 }
 
+static void clear_prompt(mg_proto_t *p)
+{
+#if MG_WITH_SECURE
+    if (p->pair_method) {
+        p->pair_method = 0;
+        if (p->ops.pairing_prompt) {
+            p->ops.pairing_prompt(p->ops.ctx, 0, 0);
+        }
+    }
+#else
+    (void)p;
+#endif
+}
+
 void mg_proto_connect(mg_proto_t *p)
 {
     stream_abort(p, false);
@@ -202,6 +312,7 @@ void mg_proto_connect(mg_proto_t *p)
 void mg_proto_disconnect(mg_proto_t *p)
 {
     bool was = p->connected;
+    clear_prompt(p);
     stream_abort(p, false);   /* nobody left to tell */
     reset_connection(p);
     p->connected = false;
@@ -571,6 +682,7 @@ void mg_proto_claim_audio(mg_proto_t *p, bool claim)
 {
     p->audio_claimed = claim;
     if (claim) {
+        p->reply_ch = secure(p) ? MG_CH_ENC_CONTROL : MG_CH_CONTROL;
         stream_abort(p, p->connected && mg_proto_ready(p));
     }
 }
@@ -583,6 +695,7 @@ void mg_proto_stream_tick(mg_proto_t *p)
     }
     uint32_t since = now_ms(p) - p->update_ms;
     if (since >= 250 || (since >= 100 && mg_play_available(pl) != p->update_avail)) {
+        p->reply_ch = secure(p) ? MG_CH_ENC_CONTROL : MG_CH_CONTROL;
         send_buffer_update(p);
     }
 }
@@ -597,6 +710,7 @@ void mg_proto_stream_finished(mg_proto_t *p)
     pl->state = MG_PLAY_IDLE;
     mg_play_release(pl);
     if (p->connected) {
+        p->reply_ch = secure(p) ? MG_CH_ENC_CONTROL : MG_CH_CONTROL;
         send_stop(p, keep ? mg_stream_audio_buffer_keep : mg_stream_audio_buffer_drop);
     }
 }
@@ -959,12 +1073,283 @@ bool mg_proto_pump(mg_proto_t *p)
     return p->transfer;
 }
 
+/* ---- session security --------------------------------------------------- */
+
+#if MG_WITH_SECURE
+
+static void secured(mg_proto_t *p)
+{
+    p->authed = true;
+    uint8_t m = mg_command_connection_secured;
+    send_control(p, &m, 1);
+}
+
+static void cmd_key_exchange(mg_proto_t *p, const uint8_t *d, size_t n)
+{
+    if (n < 2) {
+        send_error(p, mg_command_key_exchange, mg_error_code_invalid_length);
+        return;
+    }
+    if (d[1] == mg_key_exchange_command_commit) {
+        if (p->kx != MG_KX_NONE) {
+            send_error(p, mg_command_key_exchange, mg_error_code_key_exchange_failed);
+            return;
+        }
+        if (n < 4 + MG_HASH_SIZE || n > sizeof(p->m1)) {
+            send_error(p, mg_command_key_exchange, mg_error_code_invalid_length);
+            return;
+        }
+        if (d[2] != MG_SECURITY_VERSION) {
+            send_error(p, mg_command_key_exchange, mg_error_code_unsupported_version);
+            return;
+        }
+        if (d[3] != mg_crypto_suite_x25519_aes256gcm_sha256) {
+            send_error(p, mg_command_key_exchange, mg_error_code_unsupported_suite);
+            return;
+        }
+        /* The transcript hashes the complete payloads, trailing bytes included. */
+        memcpy(p->m1, d, n);
+        p->m1_len = (uint8_t)n;
+        uint8_t *m2 = p->m2;
+        m2[0] = mg_command_key_exchange;
+        m2[1] = mg_key_exchange_command_response;
+        m2[2] = MG_SECURITY_VERSION;
+        m2[3] = mg_crypto_suite_x25519_aes256gcm_sha256;
+        if (!p->ops.random || !p->ops.random(p->ops.ctx, p->dev_priv, 32)
+            || !p->ops.random(p->ops.ctx, m2 + 4 + MG_PUBLIC_KEY_SIZE, MG_NONCE_SIZE)
+            || !mg_crypto_x25519_public(p->dev_priv, m2 + 4)) {
+            p->kx = MG_KX_FAILED;
+            send_error(p, mg_command_key_exchange, mg_error_code_key_exchange_failed);
+            return;
+        }
+        p->kx = MG_KX_COMMITTED;
+        raw(p, MG_CH_CONTROL, m2, sizeof(p->m2));
+        return;
+    }
+    if (d[1] == mg_key_exchange_command_reveal) {
+        const size_t len = 2 + MG_PUBLIC_KEY_SIZE + MG_NONCE_SIZE;
+        uint8_t commit[32], shared[32];
+        bool ok = p->kx == MG_KX_COMMITTED && n >= len
+                  && mg_crypto_sha256(d + 2, MG_PUBLIC_KEY_SIZE + MG_NONCE_SIZE, NULL, 0, NULL, 0, NULL, 0, commit)
+                  && mg_crypto_equal(commit, p->m1 + 4, 32)
+                  && mg_crypto_x25519(p->dev_priv, d + 2, shared)
+                  && mg_crypto_derive(shared, p->m1, p->m1_len, p->m2, sizeof(p->m2), d, n, &p->keys)
+                  && mg_crypto_session_start(&p->crypto, &p->keys);
+        mg_crypto_wipe(shared, sizeof(shared));
+        mg_crypto_wipe(p->dev_priv, sizeof(p->dev_priv));
+        if (!ok) {
+            p->kx = MG_KX_FAILED;
+            mg_crypto_wipe(&p->keys, sizeof(p->keys));
+            send_error(p, mg_command_key_exchange, mg_error_code_key_exchange_failed);
+            return;
+        }
+        /* The traffic keys now live in the crypto session only. */
+        mg_crypto_wipe(p->keys.keys, sizeof(p->keys.keys));
+        p->kx = MG_KX_DONE;
+        if (p->ops.pairing_mode && p->ops.pairing_mode(p->ops.ctx) && p->ops.pairing_attempt) {
+            p->ops.pairing_attempt(p->ops.ctx);
+        }
+        return;   /* no reply on success */
+    }
+    send_error(p, mg_command_key_exchange, mg_error_code_key_exchange_failed);
+}
+
+static void maybe_paired(mg_proto_t *p)
+{
+    if (!p->pair_method || !p->pair_device_ok || !p->pair_client_ok) {
+        return;
+    }
+    clear_prompt(p);
+    if (!p->ops.pairing_save || !p->ops.pairing_save(p->ops.ctx, p->keys.key_id, p->keys.pairing_key)) {
+        send_error(p, mg_command_authenticate, mg_error_code_pairing_rejected);
+        return;
+    }
+    memcpy(p->key_id, p->keys.key_id, MG_KEY_ID_SIZE);
+    p->have_key_id = true;
+    uint8_t m[2 + MG_KEY_ID_SIZE] = { mg_command_authenticate, mg_authenticate_command_pair_complete };
+    memcpy(m + 2, p->keys.key_id, MG_KEY_ID_SIZE);
+    send_control(p, m, sizeof(m));
+    secured(p);
+}
+
+static bool method_offered(const mg_proto_t *p, uint8_t method)
+{
+    for (int i = 0; i < p->cfg.n_methods; i++) {
+        if (p->cfg.methods[i] == method) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void cmd_authenticate(mg_proto_t *p, const uint8_t *d, size_t n)
+{
+    if (n < 2) {
+        send_error(p, mg_command_authenticate, mg_error_code_invalid_length);
+        return;
+    }
+    uint8_t sub = d[1];
+    if (sub == mg_authenticate_command_unpair) {
+        if (!p->authed) {
+            send_error(p, mg_command_authenticate, mg_error_code_authentication_required);
+            return;
+        }
+        if (p->have_key_id && p->ops.pairing_forget) {
+            p->ops.pairing_forget(p->ops.ctx, p->key_id);
+        }
+        uint8_t m[2] = { mg_command_authenticate, mg_authenticate_command_unpair };
+        send_control(p, m, sizeof(m));
+        return;
+    }
+    if (p->authed) {
+        /* Authentication runs once per connection. */
+        send_error(p, mg_command_authenticate, mg_error_code_auth_failed);
+        return;
+    }
+    switch (sub) {
+    case mg_authenticate_command_prove: {
+        if (n < 2 + MG_KEY_ID_SIZE + MG_HASH_SIZE) {
+            send_error(p, mg_command_authenticate, mg_error_code_invalid_length);
+            return;
+        }
+        uint8_t pk[32], mac[32];
+        bool ok = p->ops.pairing_find && p->ops.pairing_find(p->ops.ctx, d + 2, pk)
+                  && mg_crypto_auth_mac(pk, false, p->keys.th, mac)
+                  && mg_crypto_equal(mac, d + 2 + MG_KEY_ID_SIZE, 32)
+                  && mg_crypto_auth_mac(pk, true, p->keys.th, mac);
+        mg_crypto_wipe(pk, sizeof(pk));
+        if (!ok) {
+            send_error(p, mg_command_authenticate, mg_error_code_auth_failed);
+            if (++p->auth_failures >= MG_AUTH_MAX_FAILURES && p->ops.disconnect) {
+                p->ops.disconnect(p->ops.ctx);
+            }
+            return;
+        }
+        memcpy(p->key_id, d + 2, MG_KEY_ID_SIZE);
+        p->have_key_id = true;
+        uint8_t m[2 + MG_HASH_SIZE] = { mg_command_authenticate, mg_authenticate_command_proof };
+        memcpy(m + 2, mac, 32);
+        send_control(p, m, sizeof(m));
+        secured(p);
+        return;
+    }
+    case mg_authenticate_command_pair_request: {
+        uint8_t method = n > 2 ? d[2] : 0;
+        if (p->pair_method || !method_offered(p, method) || !p->ops.pairing_mode
+            || !p->ops.pairing_mode(p->ops.ctx)) {
+            send_error(p, mg_command_authenticate, mg_error_code_pairing_not_allowed);
+            return;
+        }
+        p->pair_method = method;
+        p->pair_device_ok = p->pair_client_ok = false;
+        p->pair_deadline_ms = (p->ops.now_ms ? p->ops.now_ms(p->ops.ctx) : 0) + MG_PAIRING_TIMEOUT_S * 1000u;
+        uint8_t m[3] = { mg_command_authenticate, mg_authenticate_command_pair_pending, method };
+        send_control(p, m, sizeof(m));
+        if (p->ops.pairing_prompt) {
+            p->ops.pairing_prompt(p->ops.ctx, method, p->keys.pairing_code);
+        }
+        return;
+    }
+    case mg_authenticate_command_pair_confirm:
+        if (!p->pair_method) {
+            send_error(p, mg_command_authenticate, mg_error_code_pairing_rejected);
+            return;
+        }
+        p->pair_client_ok = true;
+        maybe_paired(p);
+        return;
+    default:
+        send_error(p, mg_command_authenticate, mg_error_code_unsupported);
+        return;
+    }
+}
+
+bool mg_proto_device_confirm(mg_proto_t *p, bool accept)
+{
+    if (!p->pair_method) {
+        return false;
+    }
+    if (!accept) {
+        clear_prompt(p);
+        p->reply_ch = MG_CH_ENC_CONTROL;
+        send_error(p, mg_command_authenticate, mg_error_code_pairing_rejected);
+        return true;
+    }
+    p->pair_device_ok = true;
+    p->reply_ch = MG_CH_ENC_CONTROL;
+    maybe_paired(p);
+    return true;
+}
+
+bool mg_proto_pairing_waiting(const mg_proto_t *p)
+{
+    return p->pair_method != 0;
+}
+
+void mg_proto_tick(mg_proto_t *p)
+{
+    if (p->tp.mode == mg_throughput_test_receive && tp_expired(p)) {
+        tp_finish(p, true);
+    }
+    if (p->pair_method && p->ops.now_ms && (int32_t)(p->ops.now_ms(p->ops.ctx) - p->pair_deadline_ms) >= 0) {
+        clear_prompt(p);
+        p->reply_ch = MG_CH_ENC_CONTROL;
+        send_error(p, mg_command_authenticate, mg_error_code_pairing_rejected);
+    }
+}
+
+/* Drops the session after a bad frame: an error on plaintext Control, then disconnect. */
+static void decrypt_failed(mg_proto_t *p)
+{
+    send_error_on(p, MG_CH_CONTROL, mg_command_enable_encryption, mg_error_code_decrypt_failed);
+    if (p->ops.disconnect) {
+        p->ops.disconnect(p->ops.ctx);
+    }
+    mg_crypto_session_end(&p->crypto);
+    p->kx = MG_KX_FAILED;
+    p->encrypted = p->authed = false;
+    clear_prompt(p);
+}
+
+/* Opens a frame on Encrypted Control or Data; plaintext into pt. */
+static bool open_frame(mg_proto_t *p, bool data, const uint8_t *d, size_t n, uint8_t *pt, size_t *ptlen)
+{
+    int i = data ? 1 : 0;
+    uint32_t seq;
+    if (p->kx != MG_KX_DONE || n < MG_FRAME_OVERHEAD || n > MG_FRAME_OVERHEAD + sizeof(p->rx_pt)
+        || !mg_crypto_open(&p->crypto, data ? MG_KEY_C2D_DATA : MG_KEY_C2D_CONTROL, d, n, &seq, pt)
+        || (p->rx_any[i] && seq <= p->rx_last[i])) {
+        return false;
+    }
+    p->rx_any[i] = true;
+    p->rx_last[i] = seq;
+    *ptlen = n - MG_FRAME_OVERHEAD;
+    return true;
+}
+
+#else
+
+bool mg_proto_device_confirm(mg_proto_t *p, bool accept)
+{
+    (void)p;
+    (void)accept;
+    return false;
+}
+
+bool mg_proto_pairing_waiting(const mg_proto_t *p)
+{
+    (void)p;
+    return false;
+}
+
 void mg_proto_tick(mg_proto_t *p)
 {
     if (p->tp.mode == mg_throughput_test_receive && tp_expired(p)) {
         tp_finish(p, true);
     }
 }
+
+#endif
 
 /* ---- commands ----------------------------------------------------------- */
 
@@ -997,6 +1382,45 @@ static void command(mg_proto_t *p, const uint8_t *d, size_t n)
     const uint8_t *a = d + 1;
     size_t an = n - 1;
 
+#if MG_WITH_SECURE
+    if (secure(p)) {
+        bool enc = p->reply_ch == MG_CH_ENC_CONTROL;
+        if (!enc) {
+            /* Plaintext Control: only the key exchange and status, and nothing once encrypted. */
+            if (p->encrypted) {
+                return;
+            }
+            if (cmd == mg_command_key_exchange) {
+                cmd_key_exchange(p, d, n);
+                return;
+            }
+            if (cmd != mg_command_request_status) {
+                send_error(p, cmd, mg_error_code_encryption_required);
+                return;
+            }
+        } else if (cmd == mg_command_enable_encryption) {
+            if (!p->encrypted) {
+                p->encrypted = true;
+                uint8_t m = mg_command_enable_encryption;
+                send_control(p, &m, 1);
+            }
+            return;
+        } else if (cmd == mg_command_key_exchange) {
+            send_error(p, cmd, mg_error_code_key_exchange_failed);
+            return;
+        } else if (cmd == mg_command_authenticate) {
+            if (!p->encrypted) {
+                send_error(p, cmd, mg_error_code_encryption_required);
+            } else {
+                cmd_authenticate(p, d, n);
+            }
+            return;
+        } else if (!p->authed && cmd != mg_command_request_status) {
+            send_error(p, cmd, mg_error_code_authentication_required);
+            return;
+        }
+    }
+#endif
 
     switch (cmd) {
     case mg_command_request_status:
@@ -1075,11 +1499,38 @@ void mg_proto_write(mg_proto_t *p, mg_ch_t ch, const uint8_t *data, size_t len)
     }
     switch (ch) {
     case MG_CH_CONTROL:
+        p->reply_ch = MG_CH_CONTROL;
         command(p, data, len);
         break;
     case MG_CH_DATA:
-        data_in(p, data, len);   /* stream audio, or throughput test data */
+        /* Stream audio; a secure device takes it only on Encrypted Data. */
+        if (!secure(p)) {
+            data_in(p, data, len);
+        }
         break;
+#if MG_WITH_SECURE
+    case MG_CH_ENC_CONTROL:
+    case MG_CH_ENC_DATA: {
+        if (!secure(p) || p->kx != MG_KX_DONE) {
+            return;   /* no session to decrypt with */
+        }
+        uint8_t *pt = p->rx_pt;
+        size_t n = 0;
+        if (!open_frame(p, ch == MG_CH_ENC_DATA, data, len, pt, &n)) {
+            decrypt_failed(p);
+            return;
+        }
+        if (ch == MG_CH_ENC_CONTROL) {
+            p->reply_ch = MG_CH_ENC_CONTROL;
+            command(p, pt, n);
+            p->reply_ch = p->encrypted ? MG_CH_ENC_CONTROL : MG_CH_CONTROL;
+        } else if (p->authed) {
+            data_in(p, pt, n);
+        }
+        mg_crypto_wipe(pt, n);
+        break;
+    }
+#endif
     default:
         break;
     }
@@ -1092,6 +1543,11 @@ bool mg_proto_ready(const mg_proto_t *p)
     if (!p->connected) {
         return false;
     }
+#if MG_WITH_SECURE
+    if (secure(p)) {
+        return p->authed && p->sub[MG_CH_ENC_CONTROL] && p->sub[MG_CH_ENC_DATA];
+    }
+#endif
     return p->sub[MG_CH_CONTROL] && p->sub[MG_CH_DATA];
 }
 
@@ -1136,6 +1592,11 @@ uint8_t mg_proto_capture_codec(const mg_proto_t *p)
 size_t mg_proto_data_payload(const mg_proto_t *p)
 {
     size_t n = p->mtu > 3 ? (size_t)p->mtu - 3 : 0;
+#if MG_WITH_SECURE
+    if (secure(p)) {
+        n = n > MG_FRAME_OVERHEAD ? n - MG_FRAME_OVERHEAD : 0;
+    }
+#endif
     return n > 256 ? 256 : n;
 }
 
@@ -1145,6 +1606,7 @@ bool mg_proto_gesture(mg_proto_t *p, uint8_t gesture)
         return false;
     }
     uint8_t m[2] = { mg_command_gesture, gesture };
+    p->reply_ch = secure(p) ? MG_CH_ENC_CONTROL : MG_CH_CONTROL;
     return send_control(p, m, sizeof(m));
 }
 
@@ -1159,6 +1621,7 @@ bool mg_proto_live_begin(mg_proto_t *p, uint8_t codec)
     }
     p->data_type = codec;
     p->live = true;
+    p->reply_ch = secure(p) ? MG_CH_ENC_CONTROL : MG_CH_CONTROL;
     send_data_type(p);
     return true;
 }
@@ -1181,6 +1644,7 @@ void mg_proto_live_end(mg_proto_t *p, bool notify_stop)
     p->live = false;
     if (notify_stop && mg_proto_ready(p)) {
         uint8_t m = mg_command_stop_mic;
+        p->reply_ch = secure(p) ? MG_CH_ENC_CONTROL : MG_CH_CONTROL;
         send_control(p, &m, 1);
     }
 }

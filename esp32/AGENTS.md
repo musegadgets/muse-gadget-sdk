@@ -430,18 +430,20 @@ The device still needs to be paired once for its token.
 ## musegadgets BLE audio
 
 `components/muse_gadget_ble` implements the musegadgets BLE protocol
-(`../protocols/mgcommands.h`): a phone, browser or gateway connects over BLE,
-turns on push-to-talk, and gets each utterance as SBC (the default) or LC3.
-Its `README.md` covers the design. Include the protocol header; never copy
-its constants.
+(`../protocols/mgcommands.h`, and `mgcommands-secure.h` for session security):
+a phone, browser or gateway connects over BLE, turns on push-to-talk, and gets
+each utterance as SBC (the default) or LC3. Its `README.md` covers the design.
+Include the protocol headers; never copy their constants.
 
 - **Turn it on** with `CONFIG_MUSE_GADGET_BLE_AUDIO=y` in the board's overlay
-  (the Waveshare S3 1.75C has it) or under "Muse Gadget BLE audio" in
+  (the Waveshare S3 1.75C has it, with session security) or under "Muse Gadget BLE audio" in
   `idf.py -B <dir> menuconfig`. Off, nothing changes. It needs a board with a
   mic to be useful: the full-UI boards with PSRAM, and the Voice PE.
 - **Options:** the routing policy (`CONFIG_MUSE_GADGET_BLE_ROUTE_AUTO`,
   `_BLE_ONLY`, `_WIFI_ONLY`), `CONFIG_MUSE_GADGET_BLE_LC3` (default on the S3
   and ESP32 only: LC3 is floating point and the C6 and C5 have no FPU),
+  `CONFIG_MUSE_GADGET_BLE_SECURE` (session security; default off, on for the
+  Waveshare S3 1.75C, whose clients must pair once),
   `CONFIG_MUSE_GADGET_BLE_QUEUE` (offline clips; needs the `mg_queue`
   partition in `partitions_muse.csv`), and `CONFIG_MUSE_GADGET_BLE_NUS_LOG_TAGS`.
 - **It shares Link's BLE server** (`main/ble_server.c`) as a companion, like
@@ -465,7 +467,8 @@ its constants.
 - **Token proof:** `mg_command_token_proof` (34) on every gadget build
   (`mg_token_proof.c`, PSA HMAC): the client proves it holds the key setup
   left, without sending the token. It gates nothing; `clear` after a match
-  resets setup and restarts the board into Link setup advertising.
+  resets setup and restarts the board into Link setup advertising. On a
+  secure build it runs on Encrypted Control after authentication.
 - **BLE only:** `CONFIG_MUSE_GADGET_BLE_STANDALONE=y` makes a board a
   musegadgets gadget and nothing else: `app_run()` hands over to
   `run_ble_standalone()` before Wi-Fi, so Wi-Fi, the Muse session, the
@@ -543,6 +546,10 @@ its constants.
     as the button, like the console's other setup commands. Light and
     status-screen boards have no console input: their button stays the only
     way to confirm.
+- **Pairing a client** (secure builds): pairing mode is on while no client is
+  paired, and for two minutes after turning on BLE phone setup. The talk button
+  confirms; boards with the full UI show the code on the pairing card. The
+  bench client speaks plaintext only.
 - **The Wi-Fi path stays as it was.** The push-to-talk loops only call into
   `mg_voice.h` under `#if CONFIG_MUSE_GADGET_BLE_AUDIO`.
 - **Test** with the host tests below: `test_mg_ble` (protocol, routing,
@@ -550,7 +557,9 @@ its constants.
   `test_mg_token_proof` (the same on the device's PSA code; needs `IDF_PATH`
   like `test_link_pairing_handshake`), `test_link_gadget_setup` (Wi-Fi-optional
   `provision_v2`, the token-only commit and its rollback, BLE-only boot
-  recovery), `test_mg_codecs` (SBC and LC3 round trips), `test_mg_play`
+  recovery), `test_mg_codecs` (SBC and LC3 round trips), `test_mg_secure`
+  (session security against `../protocols/test-vectors/mgcommands-secure-v1.json`,
+  the token proof on Encrypted Control; needs `IDF_PATH`), `test_mg_play`
   (playback: resampler, ring, decoders), `test_mg_ble_client` (the bench
   client's parsing and decoding, its `play` flow control and token proof
   against the firmware's protocol code, and its Link setup crypto against
@@ -689,7 +698,8 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 Run one `idf.py build` first: `test_link_discovery` compiles cJSON from
 `managed_components/`, and that directory only exists after a build. Set `CC`
 or `CXX` to change compilers. Set `IDF_PATH` (activating ESP-IDF does) so the
-real-crypto tests, `test_link_pairing_handshake` and `test_mg_token_proof`, run
+real-crypto tests, `test_link_pairing_handshake`, `test_mg_token_proof` and
+`test_mg_secure`, run
 instead of skipping.
 
 Two tests skip quietly when their inputs are missing; check the summary for

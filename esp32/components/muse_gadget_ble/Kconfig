@@ -44,9 +44,10 @@ menu "Muse Gadget BLE audio (musegadgets protocol)"
             bool "BLE when a client takes it, else Wi-Fi"
             help
                 A connected musegadgets client that turned on push-to-talk
-                gets the utterance. Otherwise it goes to Muse over Wi-Fi as
-                before. With neither, it's recorded to the offline queue if
-                the client turned the queue on.
+                (and, with session security, authenticated) gets the
+                utterance. Otherwise it goes to Muse over Wi-Fi as before.
+                With neither, it's recorded to the offline queue if the
+                client turned the queue on.
 
         config MUSE_GADGET_BLE_ROUTE_BLE_ONLY
             bool "BLE only"
@@ -86,6 +87,16 @@ menu "Muse Gadget BLE audio (musegadgets protocol)"
         help
             16 kHz mono, 16 blocks, 8 subbands. 26 gives 60-byte frames
             every 8 ms (60 kb/s), the quality of mSBC.
+
+    config MUSE_GADGET_BLE_SECURE
+        bool "Session security (mgcommands-secure.h)"
+        default n
+        help
+            Key exchange, encrypted Control and Data, and pairing with a
+            press of the talk button (and a code on the screen on Muse
+            boards). Clients must pair once; audio, gestures and the token
+            proof only go to an authenticated client. Pairing keys are kept
+            in NVS.
 
     config MUSE_GADGET_BLE_QUEUE
         bool "Offline clip queue"

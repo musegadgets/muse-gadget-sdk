@@ -48,6 +48,7 @@
 #include "boards/watcher_camera.h"
 #endif
 #if CONFIG_MUSE_GADGET_BLE_AUDIO
+#include "mg_ble.h"
 #include "mg_voice.h"
 #endif
 
@@ -249,6 +250,12 @@ static void talk_button(unsigned ev)
             /* Confirmed a Muse app pairing (Link's setup button). */
             muse_state_poke();
             swallow = true;
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+        } else if (mg_ble_confirm_press()) {
+            /* Accepted a musegadgets client's pairing. */
+            muse_state_poke();
+            swallow = true;
+#endif
         } else if (muse_state_asleep()) {
             set_asleep(false, muse_board->talk_button);
             post(MUSE_PTT_DOWN, true);
@@ -320,6 +327,10 @@ static void check_sleep(void)
     bool confirm = muse_link_state() == MUSE_LINK_CONFIRM;
     announce_confirm(confirm);
     bool prompt = ble.passkey || confirm;
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+    mg_ble_prompt_t mg;
+    prompt = prompt || mg_ble_pairing_prompt(&mg);
+#endif
     if (prompt) {
         set_asleep(false, "pairing");
         return;

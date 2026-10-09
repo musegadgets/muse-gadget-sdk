@@ -22,7 +22,9 @@
 # as "c6ble".
 CONFIG_MUSE_GADGET_BLE_AUDIO=y
 CONFIG_MUSE_GADGET_BLE_STANDALONE=y
-# SBC only (LC3 is floating point, ~85 MIPS on this FPU-less RISC-V core).
+# Plaintext (no session security) for app testing; SBC only (LC3 is floating
+# point, ~85 MIPS on this FPU-less RISC-V core).
+# CONFIG_MUSE_GADGET_BLE_SECURE is not set
 # CONFIG_MUSE_GADGET_BLE_LC3 is not set
 CONFIG_MUSE_GADGET_BLE_QUEUE=y
 

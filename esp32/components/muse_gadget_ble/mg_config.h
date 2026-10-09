@@ -27,6 +27,14 @@
 #endif
 #endif
 
+#ifndef MG_WITH_SECURE
+#ifdef CONFIG_MUSE_GADGET_BLE_SECURE
+#define MG_WITH_SECURE 1
+#else
+#define MG_WITH_SECURE 0
+#endif
+#endif
+
 /* A BLE-only gadget: no Wi-Fi path to route to. */
 #ifndef MG_STANDALONE
 #ifdef CONFIG_MUSE_GADGET_BLE_STANDALONE

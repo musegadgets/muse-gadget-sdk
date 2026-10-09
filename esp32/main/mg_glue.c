@@ -73,7 +73,7 @@ static void set_speaker_volume(uint8_t volume) {
 }
 
 static void attention(void) {
-    muse_state_poke();    // keeps the screen (and the codecs) on for playback
+    muse_state_poke();    // keeps the screen on for a pairing prompt or playback
     muse_state_nudge();   // wakes the voice task for a capture request
 }
 #elif CONFIG_HOMEHUB_VOICE
@@ -115,6 +115,7 @@ void mg_glue_start(void) {
         .model = model,
         .battery_pct = battery_pct,
         .mic_gain = mic_gain,
+        .display = true,
         .attention = attention,
         .speaker_write = speaker_write,
         .assistant_state = muse_voice_assistant_state,   // the face follows the turn

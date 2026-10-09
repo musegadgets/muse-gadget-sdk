@@ -19,6 +19,7 @@
 #if CONFIG_MUSE_GADGET_BLE_AUDIO
 #include "mg_ble.h"
 #include "mg_voice.h"
+#include "mgcommands-secure.h"
 #endif
 
 #include <math.h>
@@ -1367,9 +1368,27 @@ static void update_chrome(float now)
 
     /* The same card asks for the talk button when the Muse app pairs. */
     bool confirm = !b.passkey && muse_link_state() == MUSE_LINK_CONFIRM;
-    if (b.passkey || confirm) {
+    /* ...and when a musegadgets client pairs: a code to compare, or just the button. */
+    bool gadget = false;
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+    mg_ble_prompt_t mg;
+    gadget = !b.passkey && !confirm && mg_ble_pairing_prompt(&mg);
+#endif
+    if (b.passkey || confirm || gadget) {
         char code[24], hint[40];
-        if (confirm) {
+        const char *title = confirm ? (s_small ? "Muse app" : "Pair with Muse app") : "Pairing code";
+        if (gadget) {
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+            if (mg.method == mg_pairing_method_numeric_comparison) {
+                snprintf(code, sizeof(code), "%06lu", (unsigned long)mg.code);
+                snprintf(hint, sizeof(hint), s_small ? "Same? %s" : "Same code? Press %s", muse_board->talk_button);
+            } else {
+                strlcpy(code, s_small ? "Press" : "Press button", sizeof(code));
+                snprintf(hint, sizeof(hint), s_small ? "%s to pair" : "Press %s to pair", muse_board->talk_button);
+                title = s_small ? "Gadget" : "Pair a client";
+            }
+#endif
+        } else if (confirm) {
             if (!muse_board->audio_init) {
                 strlcpy(code, "Tap screen", sizeof(code));
                 strlcpy(hint, "Tap to confirm pairing", sizeof(hint));
@@ -1381,14 +1400,13 @@ static void update_chrome(float now)
             snprintf(code, sizeof(code), "%06lu", (unsigned long)b.passkey);
             strlcpy(hint, s_small ? "Enter on phone" : "Enter it on your phone", sizeof(hint));
         }
-        const char *title = confirm ? (s_small ? "Muse app" : "Pair with Muse app") : "Pairing code";
-        if (strcmp(code, lv_label_get_text(s_pair_code)) != 0) {
+        if (strcmp(code, lv_label_get_text(s_pair_code)) != 0 || strcmp(title, lv_label_get_text(s_pair_title)) != 0) {
             lv_label_set_text(s_pair_code, code);
             lv_label_set_text(s_pair_title, title);
             lv_label_set_text(s_pair_hint, hint);
         }
     }
-    lv_obj_set_flag(s_pair, LV_OBJ_FLAG_HIDDEN, !b.passkey && !confirm);
+    lv_obj_set_flag(s_pair, LV_OBJ_FLAG_HIDDEN, !b.passkey && !confirm && !gadget);
 
     bool speaker = muse_settings_speaker_on();   /* also set from settings, the phone and serial */
     if (s_speaker && (int)speaker != s_shown_speaker) {

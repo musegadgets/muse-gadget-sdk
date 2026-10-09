@@ -42,7 +42,7 @@ typedef enum {
 
 typedef struct {
     bool client_connected;   /* an mg client is connected at all */
-    bool client_ready;       /* ...and subscribed to Control and Data */
+    bool client_ready;       /* ...subscribed, and authenticated on a secure build */
     bool ptt_enabled;        /* ...and set push_to_talk_enabled */
     bool wifi_ready;         /* the Wi-Fi path can start a turn now */
     bool queue_available;    /* the queue partition exists and has room */

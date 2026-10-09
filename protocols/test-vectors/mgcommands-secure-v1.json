@@ -1,0 +1,70 @@
+{
+  "description": "mgcommands-secure.h v1, suite x25519_aes256gcm_sha256. All byte strings are lowercase hex.",
+  "client_private": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "client_public": "8f40c5adb68f25624ae5b214ea767a6ec94d829d3d7b5e1ad1ba6f3e2138285f",
+  "client_nonce": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+  "device_private": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+  "device_public": "79a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51a",
+  "device_nonce": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecf",
+  "commitment": "866e4eaedc45ab95daee36ffa742c01aeb86a1b1dfb82e365ce78c7f4cffc7ff",
+  "m1": "80000101866e4eaedc45ab95daee36ffa742c01aeb86a1b1dfb82e365ce78c7f4cffc7ff",
+  "m2": "8001010179a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51ac0c1c2c3c4c5c6c7c8c9cacbcccdcecf",
+  "m3": "80028f40c5adb68f25624ae5b214ea767a6ec94d829d3d7b5e1ad1ba6f3e2138285fa0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+  "transcript_hash": "d9b0ce1a4c297146ec8d038de61e8362f49d23f0403add43824dd8c7f45decdd",
+  "shared_secret": "6d54cc9c397e31691401110f58da1e182a635d7e44c21dc2d7be93624652ab15",
+  "prk": "5531d7653f35f1bcdd8ba99e21aa2a05b6392ec3c86668ceb1528b85930782a0",
+  "c2d_control_key": "baa184fbd17941f63ead2dba6227c977186c105db4b0feaf637b9090000e35d5",
+  "c2d_data_key": "1d5e0056b5c97180c9755e494ebbf0794397614bc989e7898dc147ee2a9b6f6a",
+  "d2c_control_key": "3ff97dbe0183349eafd064bbf03d684fb076f2624883fa84e88f61da0e9c91fd",
+  "d2c_data_key": "06891cf4cfb1ac192afde45b23b5e478ed339ffb628c7bc70eacd71862b7bdb3",
+  "pairing_code_bytes": "4ed44b09",
+  "pairing_code": "964494",
+  "pairing_key": "f030a6c052da5389385bdae0225e2a92a0a7e79dbcc2f80fca4a032a6185d6af",
+  "key_id": "dc43c9399ab71212",
+  "client_mac": "200c6ef8a89d1ad338d52a7d4c3d0313925ef5b10608498db6266317c1254a45",
+  "device_mac": "b7481c8610ad1ca31cd5740b9d34295adfd231739023d5a146115b2f5d546254",
+  "frames": [
+    {
+      "key": "c2d_control",
+      "seq": 0,
+      "plaintext": "81",
+      "frame": "0000000000f698ee05da332af40fa6da1af9e75a4598"
+    },
+    {
+      "key": "d2c_control",
+      "seq": 0,
+      "plaintext": "81",
+      "frame": "0000000000ca6a2bccffac32de4a3750fc7d4a606096"
+    },
+    {
+      "key": "c2d_control",
+      "seq": 1,
+      "plaintext": "8200dc43c9399ab71212200c6ef8a89d1ad338d52a7d4c3d0313925ef5b10608498db6266317c1254a45",
+      "frame": "0001000000bfcee75088f501e1c593560dba02e53cdc4c11c001e9b1b098ca844039361ab573eeceec49b83854196089b33fdeaea977534b5c6c2a471a47de"
+    },
+    {
+      "key": "d2c_control",
+      "seq": 1,
+      "plaintext": "8201b7481c8610ad1ca31cd5740b9d34295adfd231739023d5a146115b2f5d546254",
+      "frame": "00010000001ddacdbd5c780de9be54d736990813966592d8240943d2e698a6ffcda2bb54adf0f5e7bab16eabe0ab4029cc8b31b3fff218"
+    },
+    {
+      "key": "d2c_control",
+      "seq": 2,
+      "plaintext": "06",
+      "frame": "000200000082060b20316820a493b07a83ace8b47310"
+    },
+    {
+      "key": "d2c_data",
+      "seq": 0,
+      "plaintext": "9c711a00000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021222324252627",
+      "frame": "0000000000b6bd46ca82a96f9872aacb5117a91ae6c9a0de86926ee1945a824a63f69370f407b20547480b204060e3a31233ba65cba547224e0b4d81d459f30d3b"
+    },
+    {
+      "key": "d2c_data",
+      "seq": 1,
+      "plaintext": "9c711a00000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021222324252627",
+      "frame": "000100000072d4e1588738e9c286d1ba65826502249f8c73decc54b8cbe45cee0f4bd0b9020b8e33ac84e99fab23ce16537468d6e64df296ca856986fac7ac7221"
+    }
+  ]
+}

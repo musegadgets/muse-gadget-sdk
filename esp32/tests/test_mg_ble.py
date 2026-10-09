@@ -114,6 +114,15 @@ class MgBleTest(unittest.TestCase):
                     defs, [Path(gen), MG, MG / "include", PROTOCOLS, *incs], vendor=srcs)
                 self.assertIn("PASS mg_proto", out)
 
+    def test_session_security_is_optional(self) -> None:
+        # Session security is a build option, on for the Waveshare S3 1.75C only;
+        # mgcommands.h itself only reserves its numbers.
+        self.assertIn("config MUSE_GADGET_BLE_SECURE", (MG / "Kconfig").read_text())
+        self.assertIn("CONFIG_MUSE_GADGET_BLE_SECURE=y",
+                      (ROOT / "devices/sdkconfig.muse-waveshare-s3-175c").read_text())
+        self.assertNotIn("mgcommands-secure", (PROTOCOLS / "mgcommands.h").read_text())
+        self.assertIn('#include "mgcommands.h"', (PROTOCOLS / "mgcommands-secure.h").read_text())
+
     def test_every_capture_ends_with_stop_mic(self) -> None:
         # mgcommands.h: the device sends stop_mic whenever capture ends,
         # whichever side started (or stopped) it.
@@ -161,6 +170,7 @@ class MgBleTest(unittest.TestCase):
         self.assertIn("config MUSE_GADGET_BLE_STANDALONE", kconfig)
         overlay = (ROOT / "devices/sdkconfig.muse-waveshare-c6-18-ble").read_text()
         self.assertIn("CONFIG_MUSE_GADGET_BLE_STANDALONE=y", overlay)
+        self.assertIn("# CONFIG_MUSE_GADGET_BLE_SECURE is not set", overlay)
 
     def test_protocol_header_is_included_not_copied(self) -> None:
         # The protocol's constants live in protocols/; the component includes them.

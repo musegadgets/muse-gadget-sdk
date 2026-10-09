@@ -43,6 +43,10 @@
 #include "mg_play.h"
 #include "mg_config.h"
 #include "mgcommands.h"
+#if MG_WITH_SECURE
+#include "mg_crypto.h"
+#include "mgcommands-secure.h"
+#endif
 
 static const char *TAG = "mg.ble";
 static const char *PLAY_TAG = "mg.play";   /* on the Nordic UART mirror (tag prefix "mg") */
@@ -50,9 +54,11 @@ static const char *PLAY_TAG = "mg.play";   /* on the Nordic UART mirror (tag pre
 #define NVS_NS "mg"
 #define NVS_SETTINGS "settings"
 #define SETTINGS_VERSION 1
+#define MAX_PAIRINGS 4
+#define PAIRING_WINDOW_MS (120 * 1000)
 #define QUEUE_PART_SUBTYPE 0x4D   /* partitions_muse.csv: mg_queue */
-/* The token proof's HMACs (PSA) run on the worker. */
-#define WORKER_STACK 6144
+/* The key exchange (X25519, HKDF) and the token proof's HMACs run on the worker. */
+#define WORKER_STACK (MG_WITH_SECURE ? 8192 : 6144)
 #define PLAYER_STACK 4096
 #define PLAY_CHUNK 320                    /* 20 ms at 16 kHz: what the player writes at a time */
 #define PLAY_TAIL_CHUNKS 5                /* silence after a stream, so the DMA holds no stale audio */
@@ -67,6 +73,10 @@ static const char *PLAY_TAG = "mg.play";   /* on the Nordic UART mirror (tag pre
 static const ble_uuid128_t SVC_UUID = BLE_UUID128_INIT(MG_SERVICE_UUID_LE_BYTES);
 static const ble_uuid128_t CONTROL_UUID = BLE_UUID128_INIT(MG_CONTROL_UUID_LE_BYTES);
 static const ble_uuid128_t DATA_UUID = BLE_UUID128_INIT(MG_DATA_UUID_LE_BYTES);
+#if MG_WITH_SECURE
+static const ble_uuid128_t ENC_CONTROL_UUID = BLE_UUID128_INIT(MG_ENCRYPTED_CONTROL_UUID_LE_BYTES);
+static const ble_uuid128_t ENC_DATA_UUID = BLE_UUID128_INIT(MG_ENCRYPTED_DATA_UUID_LE_BYTES);
+#endif
 static const ble_uuid128_t NUS_UUID = BLE_UUID128_INIT(MG_NUS_SERVICE_UUID_LE_BYTES);
 static const ble_uuid128_t NUS_RX_UUID = BLE_UUID128_INIT(MG_NUS_RX_UUID_LE_BYTES);
 static const ble_uuid128_t NUS_TX_UUID = BLE_UUID128_INIT(MG_NUS_TX_UUID_LE_BYTES);
@@ -96,8 +106,17 @@ static const esp_partition_t *s_queue_part;
 #endif
 static bool s_have_queue;
 
+/* Pairing mode and the prompt (session security). */
+#if MG_WITH_SECURE
+static int64_t s_window_until_us;
+static int s_attempts;
+#endif
+static volatile uint8_t s_prompt_method;
+static volatile uint32_t s_prompt_code;
+
 typedef enum {
     EV_WRITE,
+    EV_CONFIRM,
     EV_CLIP,
     EV_KICK,
 } ev_type_t;
@@ -265,6 +284,133 @@ static void op_proof_clear(void *ctx)
     s_platform.proof_clear();
 }
 
+#if MG_WITH_SECURE
+/* Pairings: "p0".."p3", each key_id[8] || PK[32], and "pnext", the slot to overwrite next. */
+static bool pairing_slot(nvs_handle_t h, int i, uint8_t rec[40])
+{
+    char key[4] = { 'p', (char)('0' + i), 0 };
+    size_t n = 40;
+    return nvs_get_blob(h, key, rec, &n) == ESP_OK && n == 40;
+}
+
+static int pairing_count(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) {
+        return 0;
+    }
+    int count = 0;
+    uint8_t rec[40];
+    for (int i = 0; i < MAX_PAIRINGS; i++) {
+        count += pairing_slot(h, i, rec);
+    }
+    mg_crypto_wipe(rec, sizeof(rec));
+    nvs_close(h);
+    return count;
+}
+
+static bool op_pairing_find(void *ctx, const uint8_t id[8], uint8_t pk[32])
+{
+    (void)ctx;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) {
+        return false;
+    }
+    bool found = false;
+    uint8_t rec[40];
+    for (int i = 0; i < MAX_PAIRINGS && !found; i++) {
+        if (pairing_slot(h, i, rec) && mg_crypto_equal(rec, id, 8)) {
+            memcpy(pk, rec + 8, 32);
+            found = true;
+        }
+    }
+    mg_crypto_wipe(rec, sizeof(rec));
+    nvs_close(h);
+    return found;
+}
+
+static bool op_pairing_save(void *ctx, const uint8_t id[8], const uint8_t pk[32])
+{
+    (void)ctx;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
+        return false;
+    }
+    uint8_t rec[40];
+    int slot = -1;
+    for (int i = 0; i < MAX_PAIRINGS && slot < 0; i++) {
+        if (!pairing_slot(h, i, rec)) {
+            slot = i;
+        }
+    }
+    uint8_t next = 0;
+    if (slot < 0) {
+        nvs_get_u8(h, "pnext", &next);
+        slot = next % MAX_PAIRINGS;
+        nvs_set_u8(h, "pnext", (uint8_t)((slot + 1) % MAX_PAIRINGS));
+    }
+    memcpy(rec, id, 8);
+    memcpy(rec + 8, pk, 32);
+    char key[4] = { 'p', (char)('0' + slot), 0 };
+    bool ok = nvs_set_blob(h, key, rec, sizeof(rec)) == ESP_OK && nvs_commit(h) == ESP_OK;
+    mg_crypto_wipe(rec, sizeof(rec));
+    nvs_close(h);
+    ESP_LOGI(TAG, "paired a client (slot %d)%s", slot, ok ? "" : ": not saved");
+    return ok;
+}
+
+static void op_pairing_forget(void *ctx, const uint8_t id[8])
+{
+    (void)ctx;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    uint8_t rec[40];
+    for (int i = 0; i < MAX_PAIRINGS; i++) {
+        if (pairing_slot(h, i, rec) && mg_crypto_equal(rec, id, 8)) {
+            char key[4] = { 'p', (char)('0' + i), 0 };
+            nvs_erase_key(h, key);
+            ESP_LOGI(TAG, "forgot a paired client (slot %d)", i);
+        }
+    }
+    nvs_commit(h);
+    mg_crypto_wipe(rec, sizeof(rec));
+    nvs_close(h);
+}
+
+static bool op_pairing_mode(void *ctx)
+{
+    (void)ctx;
+    if (s_attempts >= MG_PAIRING_MAX_ATTEMPTS) {
+        return false;
+    }
+    return esp_timer_get_time() < s_window_until_us || pairing_count() == 0;
+}
+
+static void op_pairing_attempt(void *ctx)
+{
+    (void)ctx;
+    if (++s_attempts >= MG_PAIRING_MAX_ATTEMPTS) {
+        ESP_LOGW(TAG, "leaving pairing mode after %d attempts", s_attempts);
+    }
+}
+
+static void op_pairing_prompt(void *ctx, uint8_t method, uint32_t code)
+{
+    (void)ctx;
+    s_prompt_code = code;
+    s_prompt_method = method;
+    if (method) {
+        ESP_LOGI(TAG, "pairing: waiting for the button (%s)",
+                 method == mg_pairing_method_numeric_comparison ? "compare the code" : "press to accept");
+        if (s_platform.attention) {
+            s_platform.attention();
+        }
+    }
+}
+#endif
+
 /* ---- protocol ops ------------------------------------------------------- */
 
 static void terminate_cb(void *arg)
@@ -366,7 +512,7 @@ static int mg_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *
         return 0;
     }
     mg_ch_t ch = (mg_ch_t)(uintptr_t)arg;
-    if (ch == MG_CH_DATA) {
+    if (ch == MG_CH_DATA || ch == MG_CH_ENC_DATA) {
         /*
          * Playback audio: straight into the ring, here on the host task, so
          * no write is ever lost to a full queue (the client's flow control
@@ -479,6 +625,22 @@ static const struct ble_gatt_svc_def s_svcs[] = {
                 .flags = BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_NOTIFY,
                 .val_handle = &s_handle[MG_CH_DATA],
             },
+#if MG_WITH_SECURE
+            {
+                .uuid = &ENC_CONTROL_UUID.u,
+                .access_cb = mg_access,
+                .arg = (void *)(uintptr_t)MG_CH_ENC_CONTROL,
+                .flags = BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_NOTIFY,
+                .val_handle = &s_handle[MG_CH_ENC_CONTROL],
+            },
+            {
+                .uuid = &ENC_DATA_UUID.u,
+                .access_cb = mg_access,
+                .arg = (void *)(uintptr_t)MG_CH_ENC_DATA,
+                .flags = BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_NOTIFY,
+                .val_handle = &s_handle[MG_CH_ENC_DATA],
+            },
+#endif
             { 0 },
         },
     },
@@ -728,9 +890,9 @@ static void nus_command(char *line)
     if (!strcmp(line, "status")) {
         mg_lock();
         const mg_proto_t *p = &s_proto;
-        ESP_LOGI(TAG, "status: connected=%d ready=%d ptt=%d live=%d mtu=%u queue=%s proof=%s", p->connected,
+        ESP_LOGI(TAG, "status: connected=%d ready=%d ptt=%d live=%d mtu=%u queue=%s proof=%s%s", p->connected,
                  mg_proto_ready(p), p->ptt_enabled, p->live, p->mtu, s_have_queue ? "yes" : "no",
-                 mg_proto_proof_matched(p) ? "matched" : "no");
+                 mg_proto_proof_matched(p) ? "matched" : "no", MG_WITH_SECURE ? " secure" : "");
         mg_unlock();
     } else if (!strcmp(line, "version")) {
         ESP_LOGI(TAG, "version %s, mg%d", esp_app_get_description()->version, MG_SPEC_VERSION);
@@ -777,10 +939,16 @@ static void worker(void *arg)
             case EV_WRITE:
                 mg_lock();
                 mg_proto_write(&s_proto, (mg_ch_t)ev.ch, ev.data, ev.len);
-                link_check();   /* push-to-talk on or off */
+                link_check();   /* push-to-talk on or off, authenticated */
                 mg_unlock();
                 memset(ev.data, 0, ev.len);
                 free(ev.data);
+                break;
+            case EV_CONFIRM:
+                mg_lock();
+                mg_proto_device_confirm(&s_proto, ev.ch != 0);
+                link_check();
+                mg_unlock();
                 break;
             case EV_CLIP: {
                 mg_queue_t *q = mg_queue_get();
@@ -986,6 +1154,34 @@ void mg_ble_setup_changed(void)
     }
 }
 
+/* ---- pairing UX ---------------------------------------------------------- */
+
+bool mg_ble_pairing_prompt(mg_ble_prompt_t *out)
+{
+    out->method = s_prompt_method;
+    out->code = s_prompt_code;
+    return out->method != 0;
+}
+
+bool mg_ble_confirm_press(void)
+{
+    if (!s_ready || !s_prompt_method) {
+        return false;
+    }
+    ev_t ev = { .type = EV_CONFIRM, .ch = 1 };
+    xQueueSend(s_events, &ev, 0);
+    return true;
+}
+
+void mg_ble_open_pairing_window(void)
+{
+#if MG_WITH_SECURE
+    s_window_until_us = esp_timer_get_time() + PAIRING_WINDOW_MS * 1000LL;
+    s_attempts = 0;
+    ESP_LOGI(TAG, "pairing mode for %d s", PAIRING_WINDOW_MS / 1000);
+#endif
+}
+
 /* ---- init ---------------------------------------------------------------- */
 
 #if CONFIG_MUSE_GADGET_BLE_QUEUE
@@ -1054,6 +1250,7 @@ void mg_ble_init(const mg_ble_platform_t *platform)
     mg_play_init(&s_play, CONFIG_MUSE_GADGET_BLE_PLAY_BUFFER);
     bool speaker = s_platform.speaker_write != NULL;
     mg_proto_config_t cfg = {
+        .secure = MG_WITH_SECURE,
         .queue = mg_queue_get(),
         .play = speaker ? &s_play : NULL,
         .haptics = s_platform.vibrate != NULL,
@@ -1068,7 +1265,25 @@ void mg_ble_init(const mg_ble_platform_t *platform)
         .now_ms = op_now,
         .play_kick = op_play_kick,
         .random = op_random,
+#if MG_WITH_SECURE
+        .pairing_find = op_pairing_find,
+        .pairing_save = op_pairing_save,
+        .pairing_forget = op_pairing_forget,
+        .pairing_mode = op_pairing_mode,
+        .pairing_attempt = op_pairing_attempt,
+        .pairing_prompt = op_pairing_prompt,
+#endif
     };
+#if MG_WITH_SECURE
+    if (!mg_crypto_init()) {
+        ESP_LOGE(TAG, "PSA crypto unavailable");
+        return;
+    }
+    if (s_platform.display) {
+        cfg.methods[cfg.n_methods++] = mg_pairing_method_numeric_comparison;
+    }
+    cfg.methods[cfg.n_methods++] = mg_pairing_method_physical_confirm;
+#endif
     if (speaker && s_platform.speaker_volume && s_platform.set_speaker_volume) {
         ops.speaker_volume = op_speaker_volume;
         ops.set_speaker_volume = op_set_speaker_volume;
@@ -1102,8 +1317,8 @@ void mg_ble_init(const mg_ble_platform_t *platform)
         mg_proto_init(&s_proto, &cfg, &ops, &settings);
     }
     s_ready = true;
-    ESP_LOGI(TAG, "musegadgets BLE ready: %s%s, queue %s, playback %s", "SBC", MG_WITH_LC3 ? "+LC3" : "",
-             s_have_queue ? "on" : "off", s_player ? "on" : "off");
+    ESP_LOGI(TAG, "musegadgets BLE ready: %s%s%s, queue %s, playback %s", "SBC", MG_WITH_LC3 ? "+LC3" : "",
+             MG_WITH_SECURE ? ", secure" : "", s_have_queue ? "on" : "off", s_player ? "on" : "off");
     if (s_platform.refresh_advertising) {
         s_platform.refresh_advertising();
     }

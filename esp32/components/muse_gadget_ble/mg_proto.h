@@ -26,10 +26,13 @@
 #include "mgcommands.h"
 #include "mg_queue.h"
 #include "mg_token_proof.h"
+#if MG_WITH_SECURE
+#include "mg_crypto.h"
+#endif
 
 /*
- * The device side of the musegadgets BLE protocol (protocols/mgcommands.h)
- * for one connection, with no BLE
+ * The device side of the musegadgets BLE protocol (protocols/mgcommands.h and,
+ * with MG_WITH_SECURE, mgcommands-secure.h) for one connection, with no BLE
  * stack in it: the stack glue (mg_ble.c) feeds it writes and subscription
  * changes, and it answers through mg_proto_ops_t. The host tests drive it the
  * same way. Not thread-safe: the caller serializes every call.
@@ -38,6 +41,8 @@
 typedef enum {
     MG_CH_CONTROL,
     MG_CH_DATA,
+    MG_CH_ENC_CONTROL,
+    MG_CH_ENC_DATA,
     MG_CH_COUNT,
 } mg_ch_t;
 
@@ -78,6 +83,16 @@ typedef struct {
     uint32_t (*now_ms)(void *ctx);
     /* Fills out with random bytes (the platform CSPRNG); false on failure. */
     bool (*random)(void *ctx, uint8_t *out, size_t n);
+    /* ---- session security ---- */
+    bool (*pairing_find)(void *ctx, const uint8_t key_id[8], uint8_t pk[32]);
+    bool (*pairing_save)(void *ctx, const uint8_t key_id[8], const uint8_t pk[32]);
+    void (*pairing_forget)(void *ctx, const uint8_t key_id[8]);
+    /* pair_request is allowed now (pairing mode). */
+    bool (*pairing_mode)(void *ctx);
+    /* A key exchange completed while in pairing mode. */
+    void (*pairing_attempt)(void *ctx);
+    /* Ask the user to confirm (method, with the code for numeric comparison), or stop asking (method 0). */
+    void (*pairing_prompt)(void *ctx, uint8_t method, uint32_t code);
     /* ---- playback ---- */
     /* A stream started or stopped: wake the playback task. */
     void (*play_kick)(void *ctx);
@@ -102,11 +117,21 @@ typedef struct {
 } mg_proto_ops_t;
 
 typedef struct {
+    bool secure;                 /* implements mgcommands-secure.h (needs MG_WITH_SECURE) */
+    uint8_t methods[2];          /* mg_pairing_method_t the device offers */
+    uint8_t n_methods;
     mg_queue_t *queue;           /* the offline clip queue, or NULL */
     mg_play_t *play;             /* playback (the board has a speaker), or NULL */
     bool haptics;                /* a vibration motor: haptics_enabled and ptt_buzz_* */
     bool assistant;              /* a display or status light: assistant_state */
 } mg_proto_config_t;
+
+typedef enum {
+    MG_KX_NONE,
+    MG_KX_COMMITTED,
+    MG_KX_DONE,
+    MG_KX_FAILED,
+} mg_kx_state_t;
 
 typedef enum {
     MG_PROOF_IDLE,
@@ -157,6 +182,27 @@ typedef struct {
         mg_tp_count_t c;
     } tp;
 
+#if MG_WITH_SECURE
+    mg_kx_state_t kx;
+    bool encrypted;              /* enable_encryption done: only the encrypted characteristics */
+    bool authed;
+    uint8_t auth_failures;
+    uint32_t tx_seq[2];          /* next seq, [0] control, [1] data */
+    bool rx_any[2];
+    uint32_t rx_last[2];
+    uint8_t m1[64], m2[52];      /* M1 as received (with any trailing bytes), M2 as sent */
+    uint8_t m1_len;
+    uint8_t dev_priv[32];
+    mg_session_keys_t keys;
+    mg_crypto_session_t crypto;
+    bool have_key_id;            /* the pairing this session used or created */
+    uint8_t key_id[MG_KEY_ID_SIZE];
+    uint8_t rx_pt[512];          /* a decrypted Encrypted Control or Data frame */
+    uint8_t pair_method;         /* non-zero while a pairing waits for confirmation */
+    bool pair_device_ok, pair_client_ok;
+    uint32_t pair_deadline_ms;
+#endif
+    mg_ch_t reply_ch;            /* where replies to the command being handled go */
 } mg_proto_t;
 
 void mg_proto_init(mg_proto_t *p, const mg_proto_config_t *cfg, const mg_proto_ops_t *ops,
@@ -168,15 +214,20 @@ void mg_proto_disconnect(mg_proto_t *p);
 void mg_proto_set_mtu(mg_proto_t *p, uint16_t mtu);
 void mg_proto_subscribe(mg_proto_t *p, mg_ch_t ch, bool on);
 void mg_proto_write(mg_proto_t *p, mg_ch_t ch, const uint8_t *data, size_t len);
-/* Timeouts (the throughput test). Call about once a second. */
+/* Timeouts (the throughput test, pairing). Call about once a second. */
 void mg_proto_tick(mg_proto_t *p);
 
-/* The client's token proof matched on this connection. Nothing is gated on it. */
+/* The device's user answered a pairing prompt. False if none was waiting. */
+bool mg_proto_device_confirm(mg_proto_t *p, bool accept);
+bool mg_proto_pairing_waiting(const mg_proto_t *p);
+
+/* The client's token proof matched on this connection (on Encrypted Control after
+ * authentication, on a secure device). Nothing is gated on it. */
 bool mg_proto_proof_matched(const mg_proto_t *p);
 
 /* ---- the audio side ---- */
 
-/* Connected with notifications on: gestures and audio may go. */
+/* Connected, notifications on, and authenticated if secure: gestures and audio may go. */
 /* (mg_proto_haptics is false on a board without a vibration motor.) */
 bool mg_proto_ready(const mg_proto_t *p);
 

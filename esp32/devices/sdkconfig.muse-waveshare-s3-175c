@@ -70,6 +70,9 @@ CONFIG_PM_PROFILING=y
 # gateway that connects over BLE and turns on push-to-talk gets the talk
 # button's audio as SBC or LC3; otherwise it goes to Muse over Wi-Fi as
 # before. Offline clips go to the mg_queue partition. The Muse app's BLE
-# setup can skip Wi-Fi (token-only), and the app runs the token proof on
-# every musegadgets connection.
+# setup can skip Wi-Fi (token-only). Session security (mgcommands-secure.h)
+# is on: a client pairs once, confirmed with the talk button, and the round
+# screen shows the code for numeric comparison; the app runs the token proof
+# on Encrypted Control after authentication.
 CONFIG_MUSE_GADGET_BLE_AUDIO=y
+CONFIG_MUSE_GADGET_BLE_SECURE=y

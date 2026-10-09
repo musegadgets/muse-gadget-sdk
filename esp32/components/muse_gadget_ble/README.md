@@ -17,10 +17,13 @@ limitations under the License.
 # muse_gadget_ble
 
 The device side of the musegadgets BLE protocol
-([`protocols/mgcommands.h`](../../../protocols/mgcommands.h)): a phone,
-browser or gateway connects over BLE, turns on push-to-talk, and gets each
-utterance as SBC or LC3 frames. It's off unless `CONFIG_MUSE_GADGET_BLE_AUDIO`
-is set; the Waveshare S3 1.75C overlay turns it on. The gadget's device
+([`protocols/mgcommands.h`](../../../protocols/mgcommands.h), and with
+`CONFIG_MUSE_GADGET_BLE_SECURE`
+[`protocols/mgcommands-secure.h`](../../../protocols/mgcommands-secure.h)): a
+phone, browser or gateway connects over BLE, turns on push-to-talk, and gets
+each utterance as SBC or LC3 frames. It's off unless
+`CONFIG_MUSE_GADGET_BLE_AUDIO` is set; the Waveshare S3 1.75C overlay turns it
+on, with session security. The gadget's device
 tokens come from Muse Link setup ([`protocols/README.md`](../../../protocols/README.md),
 Gadget setup over Muse Link), and the token proof checks on each connection
 that the app and the gadget hold the same one.
@@ -29,14 +32,15 @@ that the app and the gadget hold the same one.
 
 | File | What it does | Host-tested |
 |---|---|---|
-| `mg_proto.c` | The protocol for one connection, with no BLE stack in it: commands, settings, capture, gestures, the clip queue commands, playback and the token proof | `test_mg_ble`, `test_mg_token_proof` |
+| `mg_proto.c` | The protocol for one connection, with no BLE stack in it: commands, settings, capture, gestures, the clip queue commands, playback, the token proof, and session security (key exchange, encrypted frames, authenticate, pairing, the Rules) | `test_mg_ble`, `test_mg_token_proof`, `test_mg_secure` |
+| `mg_crypto.c` | Suite 1 on PSA Crypto: X25519, SHA-256, HKDF, HMAC, AES-256-GCM | `test_mg_secure` (the JSON vectors) |
 | `mg_token_proof.c` | The token proof's crypto on PSA Crypto: K by HKDF-SHA256, the HMAC-SHA256 tags, a constant-time compare (`include/mg_token_proof.h`; the host tests use `tests/mg_token_proof_ref.c`) | `test_mg_token_proof` (the JSON vectors) |
 | `mg_codec.c` | SBC and LC3 encoders at 16 kHz mono, whole frames, `change_data_type` parameters | `test_mg_codecs` |
 | `mg_queue.c` | The offline clip queue on a flash partition, safe against resets | `test_mg_ble` |
 | `mg_route.c` | Where a press goes: BLE, Wi-Fi, the queue, or nowhere | `test_mg_ble` |
 | `mg_play.c` | Playback: the ring the client's frames go into (flow control, prebuffer, underruns, drain and drop), and the decoder (SBC, LC3, PCM to 16 kHz) | `test_mg_play`, `test_mg_ble`, `test_mg_ble_client` |
 | `mg_resample.c` | Rational polyphase resampler (8, 32, 44.1 and 48 kHz to 16 kHz), integer arithmetic | `test_mg_play` |
-| `mg_ble.c` | NimBLE: the GATT services, GAP events, a worker task, NVS (settings), the Nordic UART log mirror, Battery and Device Information | built only |
+| `mg_ble.c` | NimBLE: the GATT services, GAP events, a worker task, NVS (settings, pairings), the Nordic UART log mirror, Battery and Device Information | built only |
 | `mg_voice.c` | The voice transport layer the push-to-talk loops call (`include/mg_voice.h`) | built only |
 
 The codecs are vendored once for both SDKs, in
@@ -65,8 +69,9 @@ a *companion*. This is a second companion (`main/mg_glue.c` registers it):
 - **Security doesn't mix.** Link's setup commands keep their own encryption
   and refuse to run once set up. Muse's phone setup keeps requiring an
   authenticated bonded link. The musegadgets characteristics need no BLE
-  pairing, as the protocol says, and aren't encrypted: the token proof says
-  the gadget holds the token the phone set up, not that the link is secure.
+  pairing, as the protocol says; session security runs above GATT. Without
+  it the token proof says the gadget holds the token the phone set up, not
+  that the link is secure.
 - **One address.** Link setup and the musegadgets UUID advertise from the
   same public address (one advertiser taking turns), which apps rely on to
   match the gadget they set up with the one they connect to.
@@ -94,7 +99,7 @@ SBC. The screen follows the client's state (`mg_ble_link()`, `mg_link.h`):
 |---|---|---|
 | never | `OPEN MUSE APP` | no client since boot and no proof key: nobody has set it up |
 | disconnected | `DISCONNECTED` | no connection |
-| connecting | `CONNECTING` | connected, not yet subscribed to Control and Data |
+| connecting | `CONNECTING` | connected, not yet subscribed to Control and Data (or, secure, not authenticated) |
 | session | `APP CONNECTED` | the client's session is up, push-to-talk off |
 | ready | `READY` | ...and push-to-talk on: the only state with the mic and speaker icons, and a highlighted Bluetooth icon |
 
@@ -120,7 +125,8 @@ Push-to-talk loops (`components/muse/muse_voice.c` on boards with the full UI,
 | BLE only | BLE | queue if on, else refused | queue | refused |
 | Wi-Fi only | Wi-Fi | Wi-Fi | Wi-Fi | Wi-Fi |
 
-"Ready" means connected and subscribed to Control and Data. Wi-Fi turns run exactly
+"Ready" means connected, subscribed to Control and Data (the encrypted ones on
+a secure build), and authenticated on a secure build. Wi-Fi turns run exactly
 as without this option. On BLE the loop streams the pre-roll and the mic into
 `mg_voice_audio()` until release. A client's `start_mic` wakes the loop to
 capture until `stop_mic`. Every capture ends with a `stop_mic` notification,
@@ -195,6 +201,8 @@ Voice PE doesn't offer it yet.
   loop is idle. Disconnecting ends a stream silently. While a client's
   audio plays, the voice loop keeps the codecs powered and keeps it out of
   the push-to-talk pre-roll.
+- **Secure builds:** the frames come on Encrypted Data after
+  authentication; plain Data is ignored.
 - **Speaker volume:** `mg_setting_parameter_speaker_volume` (10) is the
   Muse speaker setting, through `main/mg_glue.c`: get returns the volume, or
   0 while the speaker is off; set 0 turns it off (the volume is kept), any
@@ -270,6 +278,8 @@ A token refresh never changes it; reset or clear erases it.
   disconnect. Nothing else waits on the proof.
 - **Logs** never show a token or K: lengths and the first 4 bytes of a
   token's SHA-256 at most.
+- **Secure builds** take it on Encrypted Control after authentication only,
+  like every command but the key exchange and request_status.
 
 ## Codecs
 
@@ -282,9 +292,23 @@ A token refresh never changes it; reset or clear erases it.
 | Flash | 3.7 KB | 35 KB |
 | Offered | always | `CONFIG_MUSE_GADGET_BLE_LC3`, on by default on the S3 and ESP32 |
 
-Each notification carries whole frames: as many as fit in ATT_MTU - 3, one
-per notification at the minimum MTU of 100, four at 247. The loop sends what each 20 ms of audio produced, so latency stays under
+Each notification carries whole frames: as many as fit in ATT_MTU - 3 (minus
+21 on a secure build), one per notification at the minimum MTU of 100, four at
+247. The loop sends what each 20 ms of audio produced, so latency stays under
 about 30 ms plus the link.
+
+## Session security
+
+With `CONFIG_MUSE_GADGET_BLE_SECURE` (default off; on for the Waveshare S3
+1.75C), the Encrypted Control and Encrypted Data characteristics are added and
+every Rule in `mgcommands-secure.h` applies. Gestures, audio and the token
+proof then only go to a client that has paired and authenticated.
+Pairing methods: physical confirm everywhere, and numeric comparison on boards
+with a screen (the avatar shows the code on its pairing card). The talk
+button confirms. Pairing mode is on while there are no pairings, and for two
+minutes after the user turns on BLE phone setup (Settings, or a double press
+of the aux button on touch boards); five key exchanges end it. Up to four
+pairings are kept in NVS (namespace `mg`); the fifth replaces the oldest.
 
 ## Offline clips
 
