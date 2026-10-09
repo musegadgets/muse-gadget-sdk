@@ -34,6 +34,9 @@
 #include "mg_setup.h"
 #include "mg_transport.h"
 #include "mgcommands.h"
+#if defined(CONFIG_MG_SECURE)
+#include "mgcommands-secure.h"
+#endif
 
 LOG_MODULE_REGISTER(mg_ble, CONFIG_MG_LOG_LEVEL);
 
@@ -112,6 +115,11 @@ static void evt_fn(struct k_work *w)
 static const struct bt_uuid_128 mg_svc_uuid = BT_UUID_INIT_128(MG_SERVICE_UUID_LE_BYTES);
 static const struct bt_uuid_128 mg_ctrl_uuid = BT_UUID_INIT_128(MG_CONTROL_UUID_LE_BYTES);
 static const struct bt_uuid_128 mg_data_uuid = BT_UUID_INIT_128(MG_DATA_UUID_LE_BYTES);
+#if defined(CONFIG_MG_SECURE)
+static const struct bt_uuid_128 mg_ectrl_uuid =
+	BT_UUID_INIT_128(MG_ENCRYPTED_CONTROL_UUID_LE_BYTES);
+static const struct bt_uuid_128 mg_edata_uuid = BT_UUID_INIT_128(MG_ENCRYPTED_DATA_UUID_LE_BYTES);
+#endif
 
 static ssize_t on_write(struct bt_conn *conn, const struct bt_gatt_attr *attr, const void *buf,
 			uint16_t len, uint16_t offset, uint8_t flags)
@@ -139,6 +147,10 @@ static ssize_t on_write(struct bt_conn *conn, const struct bt_gatt_attr *attr, c
 CCC_HANDLER(ccc_ctrl, MG_ATT_CONTROL)
 CCC_HANDLER(ccc_data, MG_ATT_DATA)
 CCC_HANDLER(ccc_setup, MG_ATT_SETUP)
+#if defined(CONFIG_MG_SECURE)
+CCC_HANDLER(ccc_ectrl, MG_ATT_ENC_CONTROL)
+CCC_HANDLER(ccc_edata, MG_ATT_ENC_DATA)
+#endif
 
 #define MG_CHRC(u, chan, ccc)                                                                      \
 	BT_GATT_CHARACTERISTIC(&(u).uuid, BT_GATT_CHRC_WRITE_WITHOUT_RESP | BT_GATT_CHRC_NOTIFY, \
@@ -149,6 +161,10 @@ BT_GATT_SERVICE_DEFINE(mg_svc,
 	BT_GATT_PRIMARY_SERVICE(&mg_svc_uuid.uuid),
 	MG_CHRC(mg_ctrl_uuid, MG_ATT_CONTROL, ccc_ctrl),
 	MG_CHRC(mg_data_uuid, MG_ATT_DATA, ccc_data),
+#if defined(CONFIG_MG_SECURE)
+	MG_CHRC(mg_ectrl_uuid, MG_ATT_ENC_CONTROL, ccc_ectrl),
+	MG_CHRC(mg_edata_uuid, MG_ATT_ENC_DATA, ccc_edata),
+#endif
 );
 
 /* Muse Link setup (mg_setup.h): RX takes the app's (chunked) JSON, TX

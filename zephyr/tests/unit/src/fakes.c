@@ -83,6 +83,10 @@ void fake_connect(void)
 	mg_session_connected();
 	mg_session_subscribed(MG_ATT_CONTROL, true);
 	mg_session_subscribed(MG_ATT_DATA, true);
+#if defined(CONFIG_MG_SECURE)
+	mg_session_subscribed(MG_ATT_ENC_CONTROL, true);
+	mg_session_subscribed(MG_ATT_ENC_DATA, true);
+#endif
 }
 
 /* Transport */
@@ -93,7 +97,7 @@ int fake_data_notes;
 int mg_transport_notify(enum mg_att_chan ch, const uint8_t *buf, size_t len, k_timeout_t wait)
 {
 	ARG_UNUSED(wait);
-	if (ch == MG_ATT_DATA) {
+	if (ch == MG_ATT_DATA || ch == MG_ATT_ENC_DATA) {
 		fake_data_notes++;
 		if (fake_notify_delay_us) {
 			k_sleep(K_USEC(fake_notify_delay_us));
@@ -274,5 +278,5 @@ void fake_init_once(void)
 
 	mg_identity_init("MuseGadget-", addr);
 	mg_setup_init();
-	mg_session_init();
+	mg_session_init(false);
 }

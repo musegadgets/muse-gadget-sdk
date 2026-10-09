@@ -33,3 +33,6 @@ tests:
       - CONFIG_MG_QUEUE_IN_SLOT1=y
       - CONFIG_FLASH_SIMULATOR_EXPLICIT_ERASE=n
       - CONFIG_MG_HAPTICS=n
+  muse_gadget.unit.secure:
+    extra_configs:
+      - CONFIG_MG_SECURE=y

@@ -26,7 +26,9 @@
 #include "mg_throughput.h"
 #include "mgcommands.h"
 
-/* Through mg_session. */
+/* Through mg_session without session security; the secure suite covers
+ * commands behind authentication. */
+#if !defined(CONFIG_MG_SECURE)
 
 #define RX(...)                                                                                    \
 	do {                                                                                       \
@@ -236,3 +238,5 @@ ZTEST(throughput, test_refused)
 }
 
 ZTEST_SUITE(throughput, NULL, setup, before, after, NULL);
+
+#endif /* !CONFIG_MG_SECURE */

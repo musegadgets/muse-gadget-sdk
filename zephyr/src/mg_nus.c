@@ -37,8 +37,8 @@
 
 /*
  * Nordic UART Service: TX mirrors the log, RX takes a few read-only console
- * commands. Any client can reach NUS, so nothing here may start capture,
- * press the button or touch setup.
+ * commands. Any client can reach NUS (it sits outside session security), so
+ * nothing here may start capture, press the button or touch setup or keys.
  */
 
 RING_BUF_DECLARE(tx_ring, 2048);
@@ -119,8 +119,8 @@ static void rx_fn(struct k_work *w)
 	const struct mg_settings *s = mg_settings_get();
 
 	if (strcmp(cmd, "status") == 0) {
-		reply("ready %d audio %d set_up %d", mg_core_is_ready(), mg_audio_activity(),
-		      mg_setup_store_complete());
+		reply("ready %d audio %d set_up %d pairing_mode %d", mg_core_is_ready(),
+		      mg_audio_activity(), mg_setup_store_complete(), mg_session_pairing_mode());
 	} else if (strcmp(cmd, "version") == 0) {
 		reply("%s mg%d", mg_app_version(), MG_SPEC_VERSION);
 	} else if (strcmp(cmd, "settings") == 0) {

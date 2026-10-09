@@ -26,7 +26,9 @@
 #include "mg_session.h"
 #include "mg_settings.h"
 
-/* Protocol engine through mg_session. */
+/* Protocol engine through mg_session without session security. The secure
+ * build covers the same commands behind authentication in test_secure.c. */
+#if !defined(CONFIG_MG_SECURE)
 
 
 static void rx(const uint8_t *buf, size_t len)
@@ -554,3 +556,4 @@ ZTEST(core, test_error_log_string)
 
 ZTEST_SUITE(core, NULL, setup, before, after, NULL);
 
+#endif /* !CONFIG_MG_SECURE */

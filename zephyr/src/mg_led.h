@@ -41,7 +41,7 @@ enum mg_led_flag {
 enum mg_led_link {
 	MG_LED_LINK_NEVER,        /* no client since boot, no device tokens */
 	MG_LED_LINK_DISCONNECTED, /* advertising */
-	MG_LED_LINK_CONNECTING,   /* connected, not subscribed */
+	MG_LED_LINK_CONNECTING,   /* connected, not subscribed (or authenticated) */
 	MG_LED_LINK_SESSION,      /* a client's session, push-to-talk off */
 	MG_LED_LINK_READY,        /* ...and push-to-talk on */
 };

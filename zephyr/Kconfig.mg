@@ -184,6 +184,30 @@ config MG_DFU
 	  BLE is up and advertising, so an image that never gets there is
 	  reverted at the next reset. Needs a sysbuild build with MCUboot.
 
+choice MG_SMP_ACCESS
+	prompt "Who may use MCUmgr SMP"
+	depends on MG_DFU
+	default MG_SMP_ACCESS_SESSION if MG_SECURE
+	default MG_SMP_ACCESS_OPEN
+
+config MG_SMP_ACCESS_OPEN
+	bool "Anyone connected"
+	help
+	  Any connected client can list, upload, test, confirm and reset. For
+	  development and plaintext gadgets.
+
+config MG_SMP_ACCESS_SESSION
+	bool "Only clients with an authenticated session"
+	depends on MG_SECURE
+	help
+	  SMP commands are answered only while the connection carries an
+	  authenticated mgcommands-secure session (a paired client that has
+	  proved its key); otherwise every command gets MGMT_ERR_EACCESSDENIED.
+	  The Muse app updates the gadget after authenticating; generic SMP
+	  tools can't.
+
+endchoice
+
 menu "Connection parameters"
 
 config MG_CONN_INTERVAL_MIN
@@ -260,6 +284,30 @@ config MG_NUS
 	default y
 	select BT_ZEPHYR_NUS
 	select RING_BUFFER
+
+config MG_SECURE
+	bool "Session security (mgcommands-secure.h)"
+	select PSA_CRYPTO
+	select PSA_WANT_ALG_ECDH
+	select PSA_WANT_ECC_MONTGOMERY_255
+	select PSA_WANT_KEY_TYPE_ECC_KEY_PAIR_GENERATE
+	select PSA_WANT_KEY_TYPE_ECC_KEY_PAIR_IMPORT
+	select PSA_WANT_KEY_TYPE_ECC_KEY_PAIR_EXPORT
+	select PSA_WANT_KEY_TYPE_ECC_PUBLIC_KEY
+	select PSA_WANT_ALG_SHA_256
+	select PSA_WANT_ALG_HMAC
+	select PSA_WANT_KEY_TYPE_HMAC
+	select PSA_WANT_ALG_GCM
+	select PSA_WANT_KEY_TYPE_AES
+	help
+	  Key exchange, application-layer AES-256-GCM on the Encrypted
+	  Control and Encrypted Data characteristics, physical_confirm pairing
+	  with the button, and pairing keys persisted with Zephyr settings.
+
+config MG_SECURE_MAX_PAIRINGS
+	int "Stored pairings"
+	depends on MG_SECURE
+	default 4
 
 config MG_LINK_SETUP_CRYPTO
 	bool

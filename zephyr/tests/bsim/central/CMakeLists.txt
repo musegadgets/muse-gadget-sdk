@@ -29,7 +29,7 @@ zephyr_include_directories(
 # The app's side of Link setup and the token proof, from the gadget's own
 # portable sources.
 target_sources(app PRIVATE src/main.c ${MG_SRC}/mg_json.c ${MG_SRC}/mg_psa.c
-  ${MG_SRC}/mg_setup_crypto.c)
+  ${MG_SRC}/mg_setup_crypto.c ${MG_SRC}/mg_crypto.c)
 mg_add_transcript(app)
 
 # The same codecs as the gadget, used here as decoders.

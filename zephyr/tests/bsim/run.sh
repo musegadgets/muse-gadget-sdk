@@ -16,7 +16,7 @@
 # Runs one BabbleSim scenario: the gadget image and the test central on a
 # simulated 2.4 GHz channel. Exit status 0 means both devices passed.
 #
-#   run.sh GADGET_EXE CENTRAL_EXE ptt|offline|setup [SIM_SECONDS]
+#   run.sh GADGET_EXE CENTRAL_EXE ptt|offline|setup|secure [SIM_SECONDS]
 #
 # Needs BSIM_OUT_PATH (BabbleSim built with `make everything`). The images
 # come from `west build -b nrf54l15bsim/nrf54l15/cpuapp`, see ../../AGENTS.md.
@@ -31,6 +31,7 @@ case $scenario in
 ptt) gadget_test=gadget_ptt ;;
 offline) gadget_test=gadget_offline ;;
 setup) gadget_test=gadget_setup ;;
+secure) gadget_test=gadget_pair ;;
 *)
 	echo "unknown scenario $scenario" >&2
 	exit 2

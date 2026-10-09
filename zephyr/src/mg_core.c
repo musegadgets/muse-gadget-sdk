@@ -59,8 +59,8 @@ static struct {
 	enum mg_led_link link;
 } c;
 
-/* Ready only with a client connected, subscribed and push-to-talk on, as
- * on the ESP32 gadgets. */
+/* Ready only with a client connected, subscribed (and authenticated on a
+ * secure build) and push-to-talk on, as on the ESP32 gadgets. */
 void mg_core_link_refresh(void)
 {
 	enum mg_led_link l;
@@ -191,6 +191,7 @@ void mg_core_send_status(void)
 	buf[n++] = mg_command_assistant_state;
 #endif
 	buf[n++] = mg_command_device_action;
+	n += mg_session_feature_cmds(&buf[n]);
 	send(buf, n);
 
 	n = 0;
@@ -202,6 +203,8 @@ void mg_core_send_status(void)
 	buf[n++] = mg_data_type_audio_lc3;
 #endif
 	send(buf, n);
+
+	mg_session_send_feature_lists();
 
 	/* Device actions: the throughput test. */
 	n = 0;
@@ -515,8 +518,8 @@ void mg_core_button(bool pressed)
 	c.button = pressed;
 
 	if (pressed) {
-		if (mg_setup_button()) {
-			/* Confirmed Link setup; the release is swallowed too. */
+		if (mg_setup_button() || mg_session_button()) {
+			/* Confirmed Link setup or a pairing; the release is swallowed too. */
 			c.button = false;
 			return;
 		}

@@ -27,6 +27,7 @@
 
 #include "mg_button.h"
 #include "mg_core.h"
+#include "mg_session.h"
 #include "mg_settings.h"
 #include "mg_setup.h"
 
@@ -34,6 +35,7 @@ enum script {
 	SCRIPT_PTT,
 	SCRIPT_OFFLINE,
 	SCRIPT_SETUP,
+	SCRIPT_PAIR,
 };
 
 static enum script script;
@@ -60,6 +62,11 @@ static bool ready_with_ptt(void)
 static bool setup_confirm_pending(void)
 {
 	return mg_setup_confirm_pending();
+}
+
+static bool pair_pending(void)
+{
+	return mg_session_pair_pending();
 }
 
 static bool queue_on_and_alone(void)
@@ -97,6 +104,13 @@ static void script_fn(void *a, void *b, void *c)
 		press(100);
 		TEST_PASS("pressed the button to confirm Link setup");
 		break;
+	case SCRIPT_PAIR:
+		/* Accept the pairing request on the device, like a user would. */
+		wait_for(pair_pending);
+		k_sleep(K_MSEC(300));
+		press(100);
+		TEST_PASS("pressed the button to accept pairing");
+		break;
 	}
 }
 
@@ -128,6 +142,12 @@ static void start_setup(void)
 	start();
 }
 
+static void start_pair(void)
+{
+	script = SCRIPT_PAIR;
+	start();
+}
+
 static const struct bst_test_instance tests[] = {
 	{
 		.test_id = "gadget_ptt",
@@ -143,6 +163,11 @@ static const struct bst_test_instance tests[] = {
 		.test_id = "gadget_setup",
 		.test_descr = "Gadget: confirm Muse Link setup with the button",
 		.test_fake_ddriver_postkernel_f = start_setup,
+	},
+	{
+		.test_id = "gadget_pair",
+		.test_descr = "Gadget: accept a pairing request with the button",
+		.test_fake_ddriver_postkernel_f = start_pair,
 	},
 	BSTEST_END_MARKER,
 };

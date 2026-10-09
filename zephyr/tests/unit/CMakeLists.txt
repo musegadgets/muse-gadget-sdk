@@ -51,6 +51,10 @@ target_sources(app PRIVATE
   src/test_proof.c
 )
 
+if(CONFIG_MG_SECURE)
+  target_sources(app PRIVATE ${MG_SRC}/mg_crypto.c ${MG_SRC}/mg_pairing.c src/test_secure.c)
+endif()
+
 mg_add_sbc(app)
 mg_add_lc3(app)
 
@@ -67,3 +71,14 @@ add_custom_command(
 )
 add_custom_target(mg_vectors DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/vectors.h)
 add_dependencies(app mg_vectors)
+
+# Session security vectors, straight from the JSON the reference generates.
+set(VEC_JSON ${MG_PROTOCOLS}/test-vectors/mgcommands-secure-v1.json)
+add_custom_command(
+  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/mg_vectors.h
+  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/gen_vectors.py ${VEC_JSON}
+          ${CMAKE_CURRENT_BINARY_DIR}/mg_vectors.h
+  DEPENDS ${VEC_JSON} ${CMAKE_CURRENT_SOURCE_DIR}/gen_vectors.py
+)
+add_custom_target(mg_secure_vectors DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/mg_vectors.h)
+add_dependencies(app mg_secure_vectors)

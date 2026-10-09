@@ -35,7 +35,7 @@
 void mg_core_control_rx(const uint8_t *buf, size_t len);
 
 /* A client connected, or its session became ready for gestures and audio
- * (Control and Data subscribed). */
+ * (Control and Data subscribed and, with session security, authenticated). */
 void mg_core_connected(void);
 void mg_core_disconnected(void);
 void mg_core_set_ready(bool ready);

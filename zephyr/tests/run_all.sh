@@ -70,13 +70,16 @@ if [ "$what" = unit ] || [ "$what" = all ]; then
 	run_unit rram -DCONFIG_FLASH_SIMULATOR_EXPLICIT_ERASE=n
 	run_unit slot1 -DCONFIG_FLASH_SIMULATOR_EXPLICIT_ERASE=n \
 		-DCONFIG_MG_QUEUE_IN_SLOT1=y -DDTC_OVERLAY_FILE=slot1.overlay -DCONFIG_MG_HAPTICS=n
+	run_unit secure -DCONFIG_MG_SECURE=y
 fi
 if [ "$what" = bsim ] || [ "$what" = all ]; then
 	echo "== bsim: building"
 	bsim_build gadget "$app" -DEXTRA_CONF_FILE=tests/bsim/gadget.conf &&
+		bsim_build gadget_secure "$app" -DEXTRA_CONF_FILE=tests/bsim/gadget-secure.conf &&
 		bsim_build central "$app/tests/bsim/central" &&
-		for s in ptt offline setup; do
+		for s in ptt offline setup secure; do
 			g=$out/gadget/zephyr/zephyr.exe
+			[ "$s" = secure ] && g=$out/gadget_secure/zephyr/zephyr.exe
 			"$here/bsim/run.sh" "$g" "$out/central/zephyr/zephyr.exe" "$s" 40 \
 				> "$out/bsim_$s.log" 2>&1 || fail=1
 			grep -E "INFO: \(|Test end|ERROR" "$out/bsim_$s.log" | sed 's/^d_0[01]: //'

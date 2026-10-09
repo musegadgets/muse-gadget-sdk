@@ -60,9 +60,10 @@ static void status(void)
 			   : st->push_to_talk_enabled ? "ready"
 						     : "app connected";
 
-	printk("bench: link %s, ptt %s, setup %s, token proof %s\n", link,
+	printk("bench: link %s, ptt %s, setup %s, token proof %s, session %s\n", link,
 	       st->push_to_talk_enabled ? "on" : "off", mg_setup_store_complete() ? "done" : "none",
-	       mg_token_proof_matched() ? "matched" : "none");
+	       mg_token_proof_matched() ? "matched" : "none",
+	       mg_session_authenticated() ? "authenticated" : "none");
 	printk("bench: battery %d mV, %u%%\n", mg_app_battery_mv(), mg_app_battery_percent());
 #if defined(CONFIG_MG_DFU)
 	printk("bench: image %s, %s%s\n", mg_app_version(),

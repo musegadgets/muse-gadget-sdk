@@ -14,16 +14,23 @@
  * limitations under the License.
  */
 
-#ifndef MG_BUTTON_H_
-#define MG_BUTTON_H_
+#ifndef MG_PAIRING_H_
+#define MG_PAIRING_H_
 
-#include <stdbool.h>
+#include <stdint.h>
 
-void mg_button_init(void);
-/* The button is down (read directly; at power-up, before input events run):
- * held at power-up asks for pairing mode (mgcommands-secure.h). */
-bool mg_button_held_at_boot(void);
-/* Feeds a press or release as if it came from the button (tests). */
-void mg_button_inject(bool pressed);
+#include "mgcommands-secure.h"
+
+/* Stored (key_id, PK) pairs, persisted with Zephyr settings under
+ * "mg/pair/<slot>". Oldest is evicted when full. */
+
+int mg_pairing_load(void);
+int mg_pairing_count(void);
+/* 0 and PK copied out, or -ENOENT. */
+int mg_pairing_find(const uint8_t key_id[MG_KEY_ID_SIZE], uint8_t pk[32]);
+int mg_pairing_add(const uint8_t key_id[MG_KEY_ID_SIZE], const uint8_t pk[32]);
+int mg_pairing_remove(const uint8_t key_id[MG_KEY_ID_SIZE]);
+/* Test hook: forget everything in RAM and storage. */
+void mg_pairing_clear(void);
 
 #endif

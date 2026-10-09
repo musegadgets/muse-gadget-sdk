@@ -50,6 +50,7 @@ target_sources(app PRIVATE
   src/mg_button.c
 )
 target_sources_ifdef(CONFIG_MG_AUDIO_QUEUE app PRIVATE src/mg_queue.c)
+target_sources_ifdef(CONFIG_MG_SECURE app PRIVATE src/mg_crypto.c src/mg_pairing.c)
 target_sources_ifdef(CONFIG_MG_BATTERY_ADC app PRIVATE src/mg_battery.c)
 target_sources_ifdef(CONFIG_MG_NUS app PRIVATE src/mg_nus.c)
 target_sources_ifdef(CONFIG_MG_DFU app PRIVATE src/mg_ota.c)

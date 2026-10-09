@@ -127,7 +127,9 @@ static struct mgmt_callback img_cb = {
 /*
  * Every SMP request, before its handler runs. An image group request (an
  * upload chunk, or the list) keeps the link listening on every connection
- * event: each one restarts the hold, CONFIG_MG_CONN_LATENCY_HOLD_MS.
+ * event: each one restarts the hold, CONFIG_MG_CONN_LATENCY_HOLD_MS. On secure builds with
+ * MG_SMP_ACCESS_SESSION, every command needs an authenticated
+ * mgcommands-secure session.
  */
 static enum mgmt_cb_return on_cmd(uint32_t event, enum mgmt_cb_return prev, int32_t *rc,
 				  uint16_t *group, bool *abort_more, void *data, size_t size)
@@ -137,8 +139,17 @@ static enum mgmt_cb_return on_cmd(uint32_t event, enum mgmt_cb_return prev, int3
 	ARG_UNUSED(group);
 	const struct mgmt_evt_op_cmd_arg *cmd = data;
 
+#if defined(CONFIG_MG_SMP_ACCESS_SESSION)
+	if (!mg_session_authenticated()) {
+		*rc = MGMT_ERR_EACCESSDENIED;
+		*abort_more = true;
+		LOG_WRN("SMP command refused: no authenticated session");
+		return MGMT_CB_ERROR_RC;
+	}
+#else
 	ARG_UNUSED(rc);
 	ARG_UNUSED(abort_more);
+#endif
 	if (size >= sizeof(*cmd) && cmd->group == MGMT_GROUP_ID_IMAGE) {
 		/* Uploads, and the image list a client reads just before one, so
 		 * latency is already off when the first chunk arrives. */
@@ -161,6 +172,9 @@ void mg_ota_init(void)
 		confirmed ? "confirmed" : "on test", swap_name(swap));
 	mgmt_callback_register(&img_cb);
 	mgmt_callback_register(&cmd_cb);
+#if defined(CONFIG_MG_SMP_ACCESS_SESSION)
+	LOG_INF("SMP: authenticated sessions only");
+#endif
 #if defined(CONFIG_MG_QUEUE_IN_SLOT1)
 	if (slot_needed()) {
 		/* An image MCUboot may install or swap back sits in the slot. */

@@ -56,7 +56,8 @@ to another Zephyr board with a button, an LED and a PDM microphone.
   nRF Connect Device Manager (or any MCUmgr client, or
   `esp32/tools/mg_ble_client.py dfu`) uploads a signed image; it runs on test
   after the next reset and keeps itself once it's up and advertising, or
-  MCUboot swaps the old one back.
+  MCUboot swaps the old one back. Secure builds only take updates from a
+  client with an authenticated session.
 - **Settings** set by the app (codec, queue) survive a restart. Push-to-talk
   is per connection, as the protocol says. The gadget lists exactly the
   settings it accepts.
@@ -86,10 +87,12 @@ to another Zephyr board with a button, an LED and a PDM microphone.
 - **Standard services**: Battery (read from the battery if one is connected,
   100% on USB without one), Device Information, a Nordic UART console that
   mirrors the log, and MCUmgr's SMP service.
-- **Session security** (an encrypted, authenticated session above Bluetooth)
-  is a follow-up, on its own branch (`ble-support-mg-secure`); this firmware
-  is plaintext musegadgets. The token proof says the gadget holds the token,
-  not that the link is private.
+- **Optional session security** (`CONFIG_MG_SECURE`, see
+  [`../protocols/mgcommands-secure.h`](../protocols/mgcommands-secure.h)):
+  an encrypted, authenticated session above Bluetooth, paired by pressing the
+  button when the app asks. On a secure build the token proof (and every
+  other command but request_status) runs on Encrypted Control after
+  authentication.
 
 ## The LED
 
@@ -104,7 +107,8 @@ to another Zephyr board with a button, an LED and a PDM microphone.
 | three quick blinks | done |
 | long blinks for 3 s | something went wrong |
 | fast blink | recording an offline clip |
-| very fast blink | press the button to confirm setup with the Muse app |
+| double blink | pairing mode (secure builds) |
+| very fast blink | press the button to confirm setup with the Muse app, or to accept pairing (secure builds) |
 
 After you let go the LED shows thinking until the app reports the reply
 (responding, then done, or error); with an app that never reports it, it
@@ -127,10 +131,13 @@ pyocd flash -t nrf54l mg-xiao.hex
 without it. Flash through the XIAO's on-board CMSIS-DAP probe (its SAMD11)
 with pyOCD or OpenOCD, from the one padded hex `tools/flash_hex.py` makes
 ([`AGENTS.md`](AGENTS.md) has the commands).
-Add `-- -DEXTRA_CONF_FILE=overlay-bench.conf` for a console that takes
-single-key commands (talk button, status) and `>pair.confirm`, which
-confirms the Muse app's setup instead of a press, for unattended tests
-(`../esp32/tools/mg_confirm.py`).
+Add `-- -DEXTRA_CONF_FILE=overlay-secure.conf` to the build for session
+security, and `overlay-bench.conf` for a console that takes single-key
+commands (talk button, status) and `>pair.confirm`, which confirms the Muse
+app's setup instead of a press, for unattended tests
+(`../esp32/tools/mg_confirm.py`). On a secure build, hold the button while
+plugging the board in to let a new phone pair (the first phone can pair
+without that); keep holding for 5 s to reset setup as well.
 
 Images are signed with MCUboot's development key, which anyone has: build
 production firmware with your own (`SB_CONFIG_BOOT_SIGNATURE_KEY_FILE`).

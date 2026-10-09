@@ -26,6 +26,8 @@
 enum mg_att_chan {
 	MG_ATT_CONTROL,
 	MG_ATT_DATA,
+	MG_ATT_ENC_CONTROL,
+	MG_ATT_ENC_DATA,
 	/* Muse Link setup's TX characteristic (notifications), and its RX
 	 * characteristic for writes (mg_setup.h). */
 	MG_ATT_SETUP,

@@ -79,6 +79,8 @@ static void assert_error(uint16_t code)
 	zassert_equal(sys_get_le16(&n->data[3]), code, "code %u", sys_get_le16(&n->data[3]));
 }
 
+/* On a secure build the proof needs an authenticated session: test_secure.c. */
+#if !defined(CONFIG_MG_SECURE)
 ZTEST(proof, test_vectors_frame_by_frame)
 {
 	for (int i = 0; i < PROOF_VEC_COUNT; i++) {
@@ -145,6 +147,8 @@ ZTEST(proof, test_rules)
 	mg_session_rx(MG_ATT_CONTROL, status, sizeof(status));
 	zassert_not_null(fake_find(MG_ATT_CONTROL, mg_command_supported_features, 0));
 }
+
+#endif /* !CONFIG_MG_SECURE */
 
 ZTEST(proof, test_setup_device_info_and_hello)
 {

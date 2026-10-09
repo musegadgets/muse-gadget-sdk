@@ -22,13 +22,12 @@ See `README.md` for a shorter human overview.
 ## What this is
 
 The Zephyr Device SDK: a freestanding Zephyr application for a push-to-talk
-BLE gadget speaking the musegadgets protocol (`../protocols/mgcommands.h`),
-set up by the Muse app over Muse Link setup (`../protocols/README.md`, Gadget
-setup over Muse Link). Include the protocol header; never copy its
-constants. The build adds `../protocols` to the include path and compiles
-`../esp32/main/pairing_transcript.c`, so build from a full checkout. Session
-security (mgcommands-secure) is not on this branch: it is a follow-up on
-`ble-support-mg-secure`.
+BLE gadget speaking the musegadgets protocol (`../protocols/mgcommands.h`,
+optionally `../protocols/mgcommands-secure.h`), set up by the Muse app over
+Muse Link setup (`../protocols/README.md`, Gadget setup over Muse Link).
+Include those headers; never copy their constants. The build adds
+`../protocols` to the include path and compiles
+`../esp32/main/pairing_transcript.c`, so build from a full checkout.
 
 | File | Role |
 |---|---|
@@ -36,7 +35,8 @@ security (mgcommands-secure) is not on this branch: it is a follow-up on
 | `src/mg_ota.c` | Firmware updates: MCUmgr hooks, confirming a test image, handing the clip slot to OTA and back |
 | `src/mg_bench.c` | Bench console (`overlay-bench.conf`): single-key commands and `>pair.confirm` on the console UART |
 | `src/mg_core.c` | Protocol engine: commands, push-to-talk, settings and queue commands |
-| `src/mg_session.c` | Between GATT and the core: Control to the core, readiness |
+| `src/mg_session.c` | Between GATT and the core: pass-through, or all of mgcommands-secure.h |
+| `src/mg_crypto.c`, `src/mg_pairing.c` | Session security's PSA Crypto primitives; stored (key_id, PK) pairs |
 | `src/mg_setup.c` | Muse Link setup: the setup service's framing, dispatch, statuses, community pairing v5 phases and timeouts, button confirmation, get_device_info, token-only provision_v2 |
 | `src/mg_setup_crypto.c`, `src/mg_psa.c` | Link setup crypto (P-256 ECDH, session keys, AES-256-GCM records, base64url) and SHA-256 / HMAC / HKDF, on PSA Crypto |
 | `src/mg_setup_store.c` | What setup stores: tokens, proof key K and the commit record in settings (ZMS), boot recovery |
@@ -117,7 +117,9 @@ From the workspace (`source ~/zephyrproject/.venv/bin/activate`, and
 ```sh
 cd ~/zephyrproject
 west build --sysbuild -p -b xiao_nrf54l15/nrf54l15/cpuapp /path/to/muse-gadget-sdk/zephyr -d build-xiao
-# bench build: add overlay-bench.conf
+west build --sysbuild -p -b xiao_nrf54l15/nrf54l15/cpuapp /path/to/muse-gadget-sdk/zephyr -d build-xiao-secure \
+  -- -DEXTRA_CONF_FILE=overlay-secure.conf
+# bench build: add overlay-bench.conf ("overlay-secure.conf;overlay-bench.conf" with security)
 west build --sysbuild -p -b xiao_nrf54l15/nrf54l15/cpuapp /path/to/muse-gadget-sdk/zephyr -d build-bench \
   -- -DEXTRA_CONF_FILE=overlay-bench.conf
 ```
@@ -141,6 +143,7 @@ update. Last measured (v4.4.2, SDK 1.0.1), app / MCUboot:
 | Build | App flash | App RAM |
 |---|---|---|
 | plain | 286,488 B | 114,792 B |
+| secure | 294,576 B | 117,040 B |
 | MCUboot | 30,612 B of 62 KB | 17,376 B |
 
 Muse Link setup and the token proof cost about 46 KB of flash and 10 KB of
@@ -150,6 +153,8 @@ code about 15 KB and 8 KB of RAM (mostly the 4.3 KB setup receive buffer and
 29 KB, a 2 KB larger app work queue stack (P-256 runs on it), and GATT
 caching, which PSA Crypto turns on (its database hash, 1.5 KB of RAM for
 the host's long work queue); dropping device tokens saved about 2 KB of each.
+Session security adds about 8 KB of flash and 2 KB of RAM on top (X25519,
+the session, stored pairings, 16 PSA key slots).
 MCUmgr SMP adds about 18 KB of flash and 7.5 KB of RAM; the SBC encoder is about
 3.4 KB of flash and LC3 about 37 KB flash / 1.8 KB RAM (`-DCONFIG_MG_LC3=n`
 drops it). The app can't outgrow its slot: it links into `slot0_partition`
@@ -206,7 +211,7 @@ Board notes (`boards/xiao_nrf54l15_nrf54l15_cpuapp.*`):
   sub_feature, set_settings, …]`, sent with request_status) names exactly the
   settings get/set_settings accept.
 - The LED shows the link (ready only with a client connected, subscribed to
-  Control and Data, and push-to-talk on) and
+  Control and Data, authenticated on secure builds, and push-to-talk on) and
   the assistant's turn (`CONFIG_MG_ASSISTANT_STATE`, `mg_command_assistant_state`):
   listening while capturing, thinking after stop_mic, then responding, done
   (a short flourish) or error (3 s) as the client reports, idle after 60 s
@@ -286,7 +291,10 @@ answers result 1 or 0 (constant-time compare). Without K a challenge is
 `not_found`; confirm with nothing pending is `invalid_value`; a new
 challenge restarts the exchange (and drops an earlier match). The result
 lasts for the connection (reset on connect and disconnect) and gates
-nothing. `clear` after a match answers result 1, then erases the setup;
+nothing. On a secure build it is a command like the others: refused in
+plaintext (`encryption_required`) and before authentication
+(`authentication_required`), and run on Encrypted Control once the session
+is authenticated. `clear` after a match answers result 1, then erases the setup;
 before a match it is `proof_required`. The supported_features list
 includes 34.
 
@@ -370,8 +378,8 @@ prints the rate seen on each side, losses, and packets per connection event
 (from how notifications bunch up on arrival).
 
 Kconfig options live in `Kconfig.mg` (`CONFIG_MG_*`): SBC bitpool, LC3 frame
-size, audio source, mic gain, queue size, the setup reset hold, firmware
-updates, the bench console.
+size, audio source, mic gain, queue size, the setup reset hold, security,
+stored pairings, firmware updates and SMP access, the bench console.
 
 ### Firmware updates (MCUmgr SMP)
 
@@ -389,8 +397,13 @@ reassembled).
 itself, so MCUboot swaps the previous one back at the next reset: build a
 test image with it to show a revert, never ship it.
 
-Any connected client may use it (the secure follow-up restricts it to
-authenticated sessions).
+Who may use it (`MG_SMP_ACCESS`): plain builds are open to any connected
+client. Secure builds default to `MG_SMP_ACCESS_SESSION`: every SMP command
+is refused (`MGMT_ERR_EACCESSDENIED`) unless the connection carries an
+authenticated mgcommands-secure session, so only a paired client that has
+proved its key (the Muse app) can update; generic SMP tools can't. BLE-level
+pairing (`MCUMGR_TRANSPORT_BT_PERM_RW_AUTHEN`) would be the alternative for
+tools that can't speak the session.
 
 ### Offline clips and updates share slot1
 
@@ -491,6 +504,8 @@ The console is on the USB serial port at 115200 baud (uart20). A healthy boot
 logs `Muse Gadget <version> starting` and `advertising as MuseGadget-XXXXXX`.
 Holding the button while powering up, for 5 s, resets setup (`setup
 complete`/`half-written setup` and `not set up` lines tell what boot found).
+With session security, holding it at power-up (for any time) also turns on
+pairing mode (the first pairing needs no button hold).
 
 ## Tests
 
@@ -508,7 +523,7 @@ not 64-bit clean). `tests/run_all.sh` runs everything inside Linux with
 `ZEPHYR_BASE`, `BSIM_OUT_PATH` and `BSIM_COMPONENTS_PATH` set:
 
 ```sh
-tests/run_all.sh          # unit (3 configurations) + BabbleSim (3 scenarios)
+tests/run_all.sh          # unit (4 configurations) + BabbleSim (4 scenarios)
 tests/run_all.sh unit
 tests/run_all.sh bsim
 ```
@@ -586,7 +601,13 @@ If the VM has no DNS, point `/etc/resolv.conf` in it at the colima gateway
   send pacing and its report, receive, durations, refusals), and the token
   proof through the engine with Zephyr's PSA Crypto and ZMS (every vector
   frame by frame, clear, the rules, per-connection results) plus Link setup's
-  device_info and pairing_ready against the vector (`test_proof.c`).
+  device_info and pairing_ready against the vector (`test_proof.c`), and
+  session security: every value in
+  `../protocols/test-vectors/mgcommands-secure-v1.json` (the header is
+  generated from the JSON at build time), a whole session byte for byte
+  against the vectors, the Rules (ordering, replay, failures, pairing
+  mode, attempts, timeout, unpair), and the token proof on Encrypted
+  Control after authentication (refused in plaintext and before it).
 - `tests/bsim`: the real firmware image (synthetic audio source, built
   without MCUboot: the queue is on its own `audio_queue_partition`) against a
   test central on simulated radios. `ptt`: scan by UUID and name, MTU, the link (2M PHY, and the
@@ -602,7 +623,10 @@ If the VM has no DNS, point `/etc/resolv.conf` in it at the colima gateway
   confirm_required, the gadget's hook presses the button, pairing_confirmed,
   Wi-Fi refused, token-only provision_v2, auth_ok; the token proof on the
   same connection; reconnect (mg only advertised, hello refused, proof
-  matches), clear, reconnect (Link setup advertised, no token).
+  matches), clear, reconnect (Link setup advertised, no token). `secure`:
+  key exchange, physical_confirm pairing with the button, encrypted
+  commands, reconnect with prove, the token proof refused in plaintext and
+  answered on Encrypted Control, replay rejected.
 - The unit tests print the encoded streams (`MGSTREAM` lines) for decoding
   with other decoders.
 
@@ -613,6 +637,6 @@ says Muse. Don't use `hatch` in file names or identifiers.
 
 ## Before you hand back work
 
-1. The board build (`--sysbuild`) passes.
+1. Both board builds (plain and `overlay-secure.conf`, with `--sysbuild`) pass.
 2. `tests/host/run.py` passes, and `tests/run_all.sh` on Linux.
 3. New files carry the Apache-2.0 header; vendored code keeps its own.

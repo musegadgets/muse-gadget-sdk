@@ -17,7 +17,7 @@
 /*
  * A test client for the gadget in BabbleSim: scans for MG_SERVICE_UUID,
  * connects, negotiates the MTU, subscribes and runs one scenario
- * (-testid=central_ptt, central_offline or central_setup) while the gadget
+ * (-testid=central_ptt, central_offline, central_setup or central_secure) while the gadget
  * image runs the matching gadget_* hook. Audio is decoded with the vendored
  * SBC and LC3 decoders and checked for the synthetic 1 kHz tone.
  */
@@ -45,6 +45,8 @@
 #include "mg_setup.h"
 #include "mg_setup_crypto.h"
 #include "mg_token_proof.h"
+#include "mg_crypto.h"
+#include "mgcommands-secure.h"
 #include "mgcommands.h"
 #include "pairing_transcript.h"
 
@@ -65,7 +67,7 @@
 		}                                                                                  \
 	} while (0)
 
-enum { CH_CTRL, CH_DATA, CH_NUS, CH_SETUP, CH_SETUP_RX, CH_N };
+enum { CH_CTRL, CH_DATA, CH_ECTRL, CH_EDATA, CH_NUS, CH_SETUP, CH_SETUP_RX, CH_N };
 
 struct note {
 	uint8_t ch;
@@ -90,6 +92,8 @@ static uint32_t nus_bytes;
 static const struct bt_uuid_128 u_svc = BT_UUID_INIT_128(MG_SERVICE_UUID_LE_BYTES);
 static const struct bt_uuid_128 u_ctrl = BT_UUID_INIT_128(MG_CONTROL_UUID_LE_BYTES);
 static const struct bt_uuid_128 u_data = BT_UUID_INIT_128(MG_DATA_UUID_LE_BYTES);
+static const struct bt_uuid_128 u_ectrl = BT_UUID_INIT_128(MG_ENCRYPTED_CONTROL_UUID_LE_BYTES);
+static const struct bt_uuid_128 u_edata = BT_UUID_INIT_128(MG_ENCRYPTED_DATA_UUID_LE_BYTES);
 static const struct bt_uuid_128 u_nus_tx = BT_UUID_INIT_128(MG_NUS_TX_UUID_LE_BYTES);
 static const struct bt_uuid_128 u_setup_tx = BT_UUID_INIT_128(MG_SETUP_TX_UUID_LE);
 static const struct bt_uuid_128 u_setup_rx = BT_UUID_INIT_128(MG_SETUP_RX_UUID_LE);
@@ -261,6 +265,10 @@ static uint8_t discover_cb(struct bt_conn *c, const struct bt_gatt_attr *attr,
 		h[CH_CTRL] = v;
 	} else if (!bt_uuid_cmp(chrc->uuid, &u_data.uuid)) {
 		h[CH_DATA] = v;
+	} else if (!bt_uuid_cmp(chrc->uuid, &u_ectrl.uuid)) {
+		h[CH_ECTRL] = v;
+	} else if (!bt_uuid_cmp(chrc->uuid, &u_edata.uuid)) {
+		h[CH_EDATA] = v;
 	} else if (!bt_uuid_cmp(chrc->uuid, &u_nus_tx.uuid)) {
 		h[CH_NUS] = v;
 	} else if (!bt_uuid_cmp(chrc->uuid, &u_setup_tx.uuid)) {
@@ -465,7 +473,7 @@ static void drain(void)
 }
 
 /* Scan, connect, MTU, discover, subscribe. */
-static int connect_and_setup(void)
+static int connect_and_setup(bool secure)
 {
 	static struct bt_gatt_exchange_params mtu;
 	static struct bt_gatt_discover_params disc;
@@ -503,10 +511,17 @@ static int connect_and_setup(void)
 	if (!h[CH_CTRL] || !h[CH_DATA] || !h[CH_NUS] || !h[CH_SETUP] || !h[CH_SETUP_RX]) {
 		return -ENOENT;
 	}
+	if (secure && (!h[CH_ECTRL] || !h[CH_EDATA])) {
+		return -ENOENT;
+	}
 	err = subscribe(CH_CTRL);
 	err = err ?: subscribe(CH_DATA);
 	err = err ?: subscribe(CH_NUS);
 	err = err ?: subscribe(CH_SETUP);
+	if (secure) {
+		err = err ?: subscribe(CH_ECTRL);
+		err = err ?: subscribe(CH_EDATA);
+	}
 	TEST_PRINT("connected to %s, ATT MTU %u", peer_name, bt_gatt_get_mtu(conn));
 	return err;
 }
@@ -608,7 +623,7 @@ static void test_ptt(void)
 
 	TEST_START("central_ptt");
 	CHECK(bt_enable(NULL) == 0, "bt_enable");
-	CHECK(connect_and_setup() == 0, "connect/setup failed");
+	CHECK(connect_and_setup(false) == 0, "connect/setup failed");
 	CHECK(strncmp(peer_name, MG_DEVICE_NAME_PREFIX "-", strlen(MG_DEVICE_NAME_PREFIX) + 1) == 0 &&
 		      strlen(peer_name) == strlen(MG_DEVICE_NAME_PREFIX) + 7,
 	      "bad name %s", peer_name);
@@ -640,7 +655,7 @@ static void test_ptt(void)
 	CHECK(expect(CH_CTRL, mg_command_supported_features, &n, 2000), "no features");
 	CHECK(memchr(&n.d[1], mg_command_start_mic, n.len - 1) != NULL, "no start_mic");
 	CHECK(memchr(&n.d[1], mg_command_gesture, n.len - 1) == NULL, "lists a notify-only command");
-	CHECK(memchr(&n.d[1], 0x80, n.len - 1) == NULL, "lists a reserved command");
+	CHECK(memchr(&n.d[1], mg_command_key_exchange, n.len - 1) == NULL, "not a secure build");
 	CHECK(expect(CH_CTRL, mg_command_supported_features, &n, 2000), "no codec list");
 	CHECK(n.len == 5 && n.d[1] == mg_command_sub_feature && n.d[2] == mg_command_start_mic &&
 		      n.d[3] == mg_data_type_audio_sbc && n.d[4] == mg_data_type_audio_lc3,
@@ -837,7 +852,7 @@ static void test_offline(void)
 
 	TEST_START("central_offline");
 	CHECK(bt_enable(NULL) == 0, "bt_enable");
-	CHECK(connect_and_setup() == 0, "connect/setup failed");
+	CHECK(connect_and_setup(false) == 0, "connect/setup failed");
 	CMD(mg_command_request_status);
 	CHECK(expect(CH_CTRL, mg_command_supported_features, &n, 2000), "no features");
 	CHECK(memchr(&n.d[1], mg_command_audio_queue, n.len - 1) != NULL, "no audio_queue");
@@ -857,7 +872,7 @@ static void test_offline(void)
 
 	/* The gadget records two utterances meanwhile. */
 	k_sleep(K_SECONDS(6));
-	CHECK(connect_and_setup() == 0, "reconnect failed");
+	CHECK(connect_and_setup(false) == 0, "reconnect failed");
 	CMD(mg_command_audio_queue, mg_audio_queue_command_status);
 	CHECK(expect(CH_CTRL, mg_command_audio_queue, &n, 2000), "no status");
 	uint16_t count = sys_get_le16(&n.d[11]);
@@ -1176,7 +1191,7 @@ static void test_setup(void)
 
 	/* Unprovisioned: both payloads, from one address. */
 	want_both = true;
-	CHECK(connect_and_setup() == 0, "connect/setup failed");
+	CHECK(connect_and_setup(false) == 0, "connect/setup failed");
 	want_both = false;
 	CHECK(adv_mg && adv_setup && !adv_other_addr,
 	      "advertising: mg %d, Link setup %d, other address %d", adv_mg, adv_setup,
@@ -1220,7 +1235,7 @@ static void test_setup(void)
 
 	/* Set up: mg only, hello refused, the proof still matches. */
 	k_sleep(K_MSEC(500));
-	CHECK(connect_and_setup() == 0, "reconnect failed");
+	CHECK(connect_and_setup(false) == 0, "reconnect failed");
 	CHECK(adv_mg && !adv_setup, "Link setup still advertised (%d)", adv_setup);
 	setup_write("{\"action\":\"pairing_client_hello\",\"version\":5,\"pairing_auth\":\"none\","
 		    "\"pairing_policy\":\"confirm_press\",\"mobile_pub\":\"x\","
@@ -1239,7 +1254,7 @@ static void test_setup(void)
 
 	k_sleep(K_MSEC(500));
 	want_both = true;
-	CHECK(connect_and_setup() == 0, "reconnect after clear failed");
+	CHECK(connect_and_setup(false) == 0, "reconnect after clear failed");
 	want_both = false;
 	CHECK(adv_setup > 0, "Link setup not advertised after clear");
 	CMD(mg_command_token_proof, mg_token_proof_challenge, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
@@ -1250,10 +1265,188 @@ static void test_setup(void)
 	TEST_PASS("Link setup (v5, button), token-only provisioning, token proof and clear verified");
 }
 
+/* ------------------------------------------------------ session security */
+
+static struct mg_aead c2d, d2c;
+static uint32_t cseq;
+
+static void send_enc(const uint8_t *pt, size_t len)
+{
+	uint8_t f[128];
+	int n = mg_frame_seal(&c2d, cseq++, pt, len, f);
+
+	write_cmd(CH_ECTRL, f, n);
+}
+
+#define ECMD(...)                                                                                  \
+	do {                                                                                       \
+		const uint8_t _b[] = {__VA_ARGS__};                                                \
+		send_enc(_b, sizeof(_b));                                                          \
+	} while (0)
+
+/* Next Encrypted Control command, decrypted into n->d. */
+static bool expect_enc(uint8_t cmd, struct note *n, int ms)
+{
+	int64_t end = k_uptime_get() + ms;
+	uint8_t pt[244];
+	uint32_t seq;
+
+	while (k_uptime_get() < end) {
+		if (!next(n, MAX(1, (int)(end - k_uptime_get()))) || n->ch != CH_ECTRL) {
+			continue;
+		}
+		int len = mg_frame_open(&d2c, n->d, n->len, &seq, pt);
+
+		if (len <= 0) {
+			TEST_FAIL("device frame failed to decrypt");
+			return false;
+		}
+		if (pt[0] == cmd) {
+			memcpy(n->d, pt, len);
+			n->len = len;
+			return true;
+		}
+	}
+	return false;
+}
+
+/* Steps 1 and 2. Fills k. */
+static bool secure_session(struct mg_session_keys *k)
+{
+	struct mg_x25519 me;
+	struct note n;
+	uint8_t nonce[16], m1[36], m3[50], ss[32];
+
+	if (mg_x25519_generate(&me) || mg_random(nonce, sizeof(nonce))) {
+		return false;
+	}
+	const uint8_t *parts[] = {me.pub, nonce};
+	const size_t lens[] = {32, 16};
+
+	m1[0] = mg_command_key_exchange;
+	m1[1] = mg_key_exchange_command_commit;
+	m1[2] = MG_SECURITY_VERSION;
+	m1[3] = mg_crypto_suite_x25519_aes256gcm_sha256;
+	mg_sha256(parts, lens, 2, &m1[4]);
+	write_cmd(CH_CTRL, m1, sizeof(m1));
+	if (!expect(CH_CTRL, mg_command_key_exchange, &n, 3000) || n.len != 52 ||
+	    n.d[1] != mg_key_exchange_command_response) {
+		TEST_PRINT("no M2");
+		return false;
+	}
+	m3[0] = mg_command_key_exchange;
+	m3[1] = mg_key_exchange_command_reveal;
+	memcpy(&m3[2], me.pub, 32);
+	memcpy(&m3[34], nonce, 16);
+	write_cmd(CH_CTRL, m3, sizeof(m3));
+	if (mg_x25519_shared(&me, &n.d[4], ss) ||
+	    mg_derive(m1, sizeof(m1), n.d, 52, m3, sizeof(m3), ss, k)) {
+		return false;
+	}
+	mg_x25519_destroy(&me);
+	mg_aead_destroy(&c2d);
+	mg_aead_destroy(&d2c);
+	mg_aead_setup(&c2d, k->c2d_control);
+	mg_aead_setup(&d2c, k->d2c_control);
+	cseq = 0;
+	ECMD(mg_command_enable_encryption);
+	return expect_enc(mg_command_enable_encryption, &n, 3000);
+}
+
+static void test_secure(void)
+{
+	struct mg_session_keys k;
+	struct note n;
+	uint8_t key_id[8], pk[32];
+
+	TEST_START("central_secure");
+	CHECK(bt_enable(NULL) == 0, "bt_enable");
+	CHECK(mg_crypto_init() == 0, "psa init");
+	CHECK(connect_and_setup(true) == 0, "connect/setup failed");
+
+	CMD(mg_command_request_status);
+	CHECK(expect(CH_CTRL, mg_command_supported_features, &n, 2000), "no features");
+	CHECK(memchr(&n.d[1], mg_command_key_exchange, n.len - 1) != NULL, "no key_exchange");
+	drain();
+
+	/* Nothing but key_exchange and request_status before encryption. */
+	CMD(mg_command_start_mic);
+	CHECK(expect(CH_CTRL, mg_command_error, &n, 2000), "no error");
+	CHECK(err_code(&n) == mg_error_code_encryption_required, "not encryption_required");
+	CMD(mg_command_token_proof, mg_token_proof_challenge, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+	    11, 12, 13, 14, 15);
+	CHECK(expect(CH_CTRL, mg_command_error, &n, 2000) && n.d[1] == mg_command_token_proof &&
+		      err_code(&n) == mg_error_code_encryption_required,
+	      "token proof in plaintext not refused");
+
+	/* First pairing, confirmed with the gadget's button. */
+	CHECK(secure_session(&k), "key exchange / encryption failed");
+	ECMD(mg_command_authenticate, mg_authenticate_command_pair_request,
+	     mg_pairing_method_physical_confirm);
+	CHECK(expect_enc(mg_command_authenticate, &n, 3000) &&
+		      n.d[1] == mg_authenticate_command_pair_pending,
+	      "no pair_pending");
+	ECMD(mg_command_authenticate, mg_authenticate_command_pair_confirm);
+	CHECK(expect_enc(mg_command_authenticate, &n, 20000) &&
+		      n.d[1] == mg_authenticate_command_pair_complete,
+	      "no pair_complete");
+	CHECK(memcmp(&n.d[2], k.key_id, 8) == 0, "key_id mismatch");
+	CHECK(expect_enc(mg_command_connection_secured, &n, 3000), "no connection_secured");
+	memcpy(key_id, k.key_id, 8);
+	memcpy(pk, k.pairing_key, 32);
+	TEST_PRINT("paired, key_id %02x%02x..., code would be %06u", key_id[0], key_id[1],
+		   mg_pairing_code_value(k.pairing_code));
+
+	ECMD(mg_command_get_settings, mg_setting_parameter_spec_version);
+	CHECK(expect_enc(mg_command_get_settings, &n, 3000) && n.len == 3 &&
+		      n.d[2] == MG_SPEC_VERSION,
+	      "encrypted get_settings");
+	disconnect();
+
+	/* Returning client: a fresh session, authenticated with the stored key. */
+	k_sleep(K_MSEC(500));
+	CHECK(connect_and_setup(true) == 0, "reconnect failed");
+	CHECK(secure_session(&k), "second key exchange failed");
+	uint8_t prove[2 + 8 + 32];
+
+	prove[0] = mg_command_authenticate;
+	prove[1] = mg_authenticate_command_prove;
+	memcpy(&prove[2], key_id, 8);
+	mg_auth_mac(pk, "mg1 client auth", k.th, &prove[10]);
+	send_enc(prove, sizeof(prove));
+	CHECK(expect_enc(mg_command_authenticate, &n, 3000) &&
+		      n.d[1] == mg_authenticate_command_proof,
+	      "no proof");
+	uint8_t mac[32];
+
+	mg_auth_mac(pk, "mg1 device auth", k.th, mac);
+	CHECK(mg_ct_equal(mac, &n.d[2], 32), "device_mac doesn't verify");
+	CHECK(expect_enc(mg_command_connection_secured, &n, 3000), "no connection_secured");
+
+	/* The token proof runs on Encrypted Control once authenticated (this
+	 * gadget was never set up: not_found). */
+	ECMD(mg_command_token_proof, mg_token_proof_challenge, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+	     12, 13, 14, 15);
+	CHECK(expect_enc(mg_command_error, &n, 3000) && n.d[1] == mg_command_token_proof &&
+		      sys_get_le16(&n.d[3]) == mg_error_code_not_found,
+	      "encrypted token proof not answered not_found");
+
+	/* Replaying an old frame drops the session. */
+	cseq = 0;
+	ECMD(mg_command_request_status);
+	CHECK(expect(CH_CTRL, mg_command_error, &n, 3000), "no decrypt_failed");
+	CHECK(n.d[1] == mg_command_enable_encryption &&
+		      err_code(&n) == mg_error_code_decrypt_failed,
+	      "not decrypt_failed");
+	CHECK(k_sem_take(&sem_gone, K_SECONDS(5)) == 0, "device didn't disconnect");
+	TEST_PASS("key exchange, physical_confirm pairing, prove and replay rejection verified");
+}
+
 static const struct bst_test_instance tests[] = {
 	{.test_id = "central_ptt", .test_main_f = test_ptt},
 	{.test_id = "central_offline", .test_main_f = test_offline},
 	{.test_id = "central_setup", .test_main_f = test_setup},
+	{.test_id = "central_secure", .test_main_f = test_secure},
 	BSTEST_END_MARKER,
 };
 

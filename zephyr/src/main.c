@@ -142,7 +142,8 @@ int main(void)
 	}
 	/* After BLE: the identity comes from the address. */
 	mg_setup_init();
-	mg_session_init();
+	/* Held at power-up: pairing mode too (mgcommands-secure.h). */
+	mg_session_init(held);
 	mg_core_link_refresh();
 #if defined(CONFIG_MG_NUS)
 	mg_nus_init();
