@@ -30,6 +30,21 @@ void link_pairing_init(const char *node_id, const char *device_id,
 void link_pairing_reset(void);
 void link_pairing_add_device_info(cJSON *root);
 
+// What provision_v2 needs of Wi-Fi, as device_info's "wifi" reports it
+// (protocols/README.md, Gadget setup over Muse Link). Required is every
+// non-gadget build's behaviour, and device_info then omits the field.
+typedef enum {
+    LINK_WIFI_REQUIRED = 0,
+    LINK_WIFI_OPTIONAL,   // no ssid: token-only provisioning
+    LINK_WIFI_NONE,       // a BLE-only gadget: ssid must be absent
+} link_wifi_mode_t;
+
+// Gadget builds call this before BLE starts: the Wi-Fi mode, and whether the
+// device also serves the musegadgets service (device_info "mgcommands": 1).
+void link_pairing_set_gadget(link_wifi_mode_t wifi, bool mgcommands);
+link_wifi_mode_t link_pairing_wifi_mode(void);
+bool link_pairing_mgcommands(void);
+
 bool link_pairing_plaintext_setup_blocked(void);
 
 const char *link_pairing_handle_client_hello(cJSON *root, char **response_json);

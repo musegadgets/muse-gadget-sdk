@@ -109,9 +109,11 @@ static bool config_get_str(const char *key, char *value, size_t cap) {
 static bool config_setup_complete(void) { checked_setup = true; return complete; }
 static bool config_is_provisioned(void) { return provisioned; }
 static bool config_mark_setup_complete(void) { complete = true; return true; }
+static bool skipped;   /* a gadget's token-only setup: Wi-Fi skipped */
+static bool config_wifi_skipped(void) { return skipped; }
 static bool config_clear_setup(void) {
     memset(stored, 0, sizeof(stored));
-    complete = provisioned = false;
+    complete = provisioned = skipped = false;
     return true;
 }
 static bool clear_setup_credentials(void) { return config_clear_setup(); }
@@ -185,6 +187,29 @@ static void check_boot(bool setup, bool token, bool wifi, bool keep_endpoints) {
     check_boot_v2(setup, token, wifi, keep_endpoints, false);
     check_boot_v2(setup, token, wifi, keep_endpoints, true);
 }
+/* A gadget's token-only setup (protocols/README.md, Gadget setup over Muse Link). */
+static void check_token_only_boot(void) {
+    /* Complete without Wi-Fi: kept, even where Muse forgets Wi-Fi. */
+    reset_fixture();
+    config_set_str("api_url_v2", custom_api_v2);
+    config_set_str("noise_host", custom_noise);
+    complete = provisioned = skipped = true;
+    boot_endpoints();
+    assert(complete && provisioned && skipped);
+    expect_endpoints(custom_api_v2, custom_noise);
+    /* Cut off before its marker: wiped, even with Wi-Fi saved since, and
+     * never migrated as a legacy Wi-Fi pair. */
+    reset_fixture();
+    config_set_str("ssid", "saved-wifi");
+    provisioned = skipped = true;
+    boot_endpoints();
+    assert(!complete && !provisioned && !skipped && !stored[0][0]);
+    /* Only the marker survived: wiped too. */
+    reset_fixture();
+    skipped = true;
+    boot_endpoints();
+    assert(!complete && !skipped);
+}
 int main(void) {
     reset_fixture();
     assert(apply_endpoints(custom_api, custom_noise));
@@ -234,6 +259,7 @@ int main(void) {
     check_boot(true, true, true, true);     // Complete custom setup.
     check_boot(false, true, true, true);    // Legacy marker migration.
     check_boot(false, true, false, CONFIG_HOMEHUB_WIFI_SSID[0] != '\0');
+    if (!CONFIG_HOMEHUB_WIFI_SSID[0]) check_token_only_boot();
     return 0;
 }
 """

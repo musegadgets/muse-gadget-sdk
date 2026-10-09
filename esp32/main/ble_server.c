@@ -82,6 +82,9 @@ static bool s_shutting_down = false;
 static bool s_synced = false;
 static bool s_advertising_enabled = false;
 static bool s_advertising_active = false;
+// What the running advertisement carries (see advertising_wanted()).
+static bool s_adv_link = false;
+static const ble_companion_t *s_adv_other = NULL;
 static bool s_plaintext_status_blocked = false;
 #define MAX_COMPANIONS 2
 static ble_companion_t s_companions[MAX_COMPANIONS];
@@ -418,12 +421,22 @@ static void dispatch_command_ex(const uint8_t *data, size_t len, bool decrypted)
         cJSON *u = cJSON_GetObjectItem(root, "username");
         cJSON *tt = cJSON_GetObjectItem(root, "token_type");
         const char *ota_url = optional_ota_url(root);
-        if (!cJSON_IsString(s) || !cJSON_IsString(p) || !cJSON_IsString(at)
-            || !s->valuestring || !p->valuestring || !at->valuestring
-            || !*s->valuestring || !*p->valuestring || !*at->valuestring
-            || !cJSON_IsString(rt) || !rt->valuestring || !*rt->valuestring
-            || !cJSON_IsString(tt) || !tt->valuestring
-            || strcmp(tt->valuestring, "device") != 0) {
+        link_wifi_mode_t wifi = link_pairing_wifi_mode();
+        bool tokens_ok = cJSON_IsString(at) && at->valuestring && *at->valuestring
+                         && cJSON_IsString(rt) && rt->valuestring && *rt->valuestring
+                         && cJSON_IsString(tt) && tt->valuestring
+                         && strcmp(tt->valuestring, "device") == 0;
+        bool wifi_ok = cJSON_IsString(s) && cJSON_IsString(p)
+                       && s->valuestring && p->valuestring
+                       && *s->valuestring && *p->valuestring;
+        // A gadget whose Wi-Fi is optional or absent provisions tokens only
+        // when ssid and password are both absent or empty.
+        bool token_only = wifi != LINK_WIFI_REQUIRED
+                          && (!s || (cJSON_IsString(s) && s->valuestring && !*s->valuestring))
+                          && (!p || (cJSON_IsString(p) && p->valuestring && !*p->valuestring));
+        if (tokens_ok && wifi == LINK_WIFI_NONE && !token_only) {
+            ble_server_send_status("error_wifi_unsupported");
+        } else if (!tokens_ok || (!token_only && !wifi_ok)) {
             ble_server_send_status("error_missing_credentials");
         } else {
             provision_args_t *a = calloc(1, sizeof(*a));
@@ -432,18 +445,37 @@ static void dispatch_command_ex(const uint8_t *data, size_t len, bool decrypted)
                 delete_command_json(root, decrypted);
                 return;
             }
-            a->ssid = dup_str(s->valuestring);
-            a->password = dup_str(p->valuestring);
-            a->access_token = dup_str(at->valuestring);
-            if (cJSON_IsString(rt) && rt->valuestring) {
-                a->refresh_token = dup_str(rt->valuestring);
+            // Token-only: no ssid reaches on_provision, which skips Wi-Fi.
+            if (!token_only) {
+                a->ssid = dup_str(s->valuestring);
+                a->password = dup_str(p->valuestring);
             }
-            if (cJSON_IsString(u) && u->valuestring) {
+            a->access_token = dup_str(at->valuestring);
+            a->refresh_token = dup_str(rt->valuestring);
+            if (wifi != LINK_WIFI_NONE && cJSON_IsString(u) && u->valuestring) {
                 a->username = dup_str(u->valuestring);
             }
-            if (*ota_url) {
+            if (*ota_url && !token_only) {
                 a->ota_url = dup_str(ota_url);
                 a->ota_force = optional_ota_force(root);
+            }
+            // On a gadget an empty ssid means token-only, so out of memory
+            // must not turn a Wi-Fi request into one.
+            if (wifi != LINK_WIFI_REQUIRED
+                && (!a->access_token || !a->refresh_token
+                    || (!token_only && (!a->ssid || !a->password)))) {
+                secure_free_str(a->ssid);
+                secure_free_str(a->password);
+                secure_free_str(a->access_token);
+                secure_free_str(a->refresh_token);
+                secure_free_str(a->username);
+                secure_free_str(a->ota_url);
+                free(a);
+                ble_server_send_status("error_operation_in_progress");
+                delete_command_json(root, decrypted);
+                return;
+            }
+            if (*ota_url && !token_only) {
                 if (!a->ota_url) {
                     secure_free_str(a->ssid);
                     secure_free_str(a->password);
@@ -456,17 +488,19 @@ static void dispatch_command_ex(const uint8_t *data, size_t len, bool decrypted)
                     return;
                 }
             }
+            // Endpoints let a device that joins Wi-Fi later reach Muse; a
+            // device without Wi-Fi has no use for them.
             cJSON *au = cJSON_GetObjectItem(root, "api_url");
-            if (cJSON_IsString(au) && au->valuestring && *au->valuestring) {
+            if (wifi != LINK_WIFI_NONE && cJSON_IsString(au) && au->valuestring && *au->valuestring) {
                 a->api_url = dup_str(au->valuestring);
             }
             // Older firmware ignores api_url_v2 and keeps reading api_url.
             cJSON *au2 = cJSON_GetObjectItem(root, "api_url_v2");
-            if (cJSON_IsString(au2) && au2->valuestring && *au2->valuestring) {
+            if (wifi != LINK_WIFI_NONE && cJSON_IsString(au2) && au2->valuestring && *au2->valuestring) {
                 a->api_url_v2 = dup_str(au2->valuestring);
             }
             cJSON *nh = cJSON_GetObjectItem(root, "noise_host");
-            if (cJSON_IsString(nh) && nh->valuestring && *nh->valuestring) {
+            if (wifi != LINK_WIFI_NONE && cJSON_IsString(nh) && nh->valuestring && *nh->valuestring) {
                 a->noise_host = dup_str(nh->valuestring);
             }
             // 8 KB stack — mbedtls 3.6 (IDF v6) needs significantly more
@@ -882,19 +916,28 @@ static const ble_companion_t *advertised_companion(void) {
     return NULL;
 }
 
-static void start_advertising(void) {
-    if (s_shutting_down) return;
+// What advertising should carry now: Link setup's UUID (link), a companion's
+// (other), both taking turns, or nothing (returns false).
+static bool advertising_wanted(bool *link, const ble_companion_t **other) {
     // A companion with its own UUID (musegadgets) is found after setup too.
-    const ble_companion_t *other = advertised_companion();
-    bool link = true;
+    *other = advertised_companion();
+    *link = true;
     // The companion service keeps the device visible after setup.
     if (!s_companion_advertising) {
-        link = !config_setup_complete() && s_advertising_enabled;
-        if (!other) {
-            if (config_setup_complete()) return;
-            if (!s_advertising_enabled) return;
+        *link = !config_setup_complete() && s_advertising_enabled;
+        if (!*other) {
+            if (config_setup_complete()) return false;
+            if (!s_advertising_enabled) return false;
         }
     }
+    return true;
+}
+
+static void start_advertising(void) {
+    if (s_shutting_down) return;
+    const ble_companion_t *other;
+    bool link;
+    if (!advertising_wanted(&link, &other)) return;
     if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) return;
     if (s_advertising_active) return;
     bool rotate = link && other;
@@ -949,9 +992,27 @@ static void start_advertising(void) {
         ESP_LOGE(TAG, "adv_start rc=%d", rc);
     } else {
         s_advertising_active = true;
+        s_adv_link = link;
+        s_adv_other = other;
         ESP_LOGI(TAG, "advertising as %s%s", s_device_name,
                  rotate ? " (taking turns)" : show_other ? " (companion)" : "");
     }
+}
+
+// Starts advertising, or restarts it when what's running isn't what's wanted
+// now: host sync can start a companion's advertising before Link setup asks
+// for its own, and a running advertisement never picks up the change itself.
+static void update_advertising(void) {
+    if (!s_synced) return;
+    if (s_advertising_active) {
+        const ble_companion_t *other;
+        bool link;
+        if (advertising_wanted(&link, &other) && link == s_adv_link && other == s_adv_other) return;
+        int rc = ble_gap_adv_stop();
+        if (rc != 0) ESP_LOGD(TAG, "adv_stop rc=%d", rc);
+        s_advertising_active = false;
+    }
+    start_advertising();
 }
 
 static void on_sync(void) {
@@ -1071,7 +1132,7 @@ void ble_server_disconnect_pairing_session(uint32_t generation) {
 void ble_server_begin_advertising(void) {
     if (!s_started || s_shutting_down) return;
     s_advertising_enabled = true;
-    if (s_synced) start_advertising();
+    update_advertising();
 }
 
 void ble_server_disconnect_client(void) {
@@ -1131,16 +1192,7 @@ void ble_server_refresh_advertising(void) {
 void ble_server_set_companion_advertising(bool enabled) {
     s_companion_advertising = enabled;
     if (!s_started || s_shutting_down) return;
-    if (enabled) {
-        if (s_synced) start_advertising();
-    } else if (!s_advertising_enabled && s_advertising_active) {
-        int rc = ble_gap_adv_stop();
-        if (rc != 0) {
-            ESP_LOGD(TAG, "adv_stop rc=%d", rc);
-        }
-        s_advertising_active = false;
-        if (s_synced) start_advertising();   // for a companion that advertises itself
-    }
+    update_advertising();
 }
 
 bool ble_server_is_started(void) {

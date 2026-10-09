@@ -13,11 +13,13 @@
 # limitations under the License.
 
 # Waveshare ESP32-C6-Touch-AMOLED-1.8 as a BLE-only musegadgets gadget: load
-# after sdkconfig.muse and sdkconfig.muse-waveshare-c6-18. Wi-Fi, Home Link
-# setup, the Muse session, the tunnel and OTA never start, which frees the
-# internal RAM that kept musegadgets BLE audio off this PSRAM-less board. The
-# talk button's audio goes to the Muse app over BLE, or to the offline queue
-# while no app is connected. tools/muse/board.sh builds it as "c6ble".
+# after sdkconfig.muse and sdkconfig.muse-waveshare-c6-18. Wi-Fi, the Muse
+# session, the tunnel and OTA never start, which frees the internal RAM that
+# kept musegadgets BLE audio off this PSRAM-less board. The Muse app sets it
+# up over Home Link's BLE setup without Wi-Fi (token-only, confirmed with the
+# talk button). The talk button's audio goes to the Muse app over BLE, or to
+# the offline queue while no app is connected. tools/muse/board.sh builds it
+# as "c6ble".
 CONFIG_MUSE_GADGET_BLE_AUDIO=y
 CONFIG_MUSE_GADGET_BLE_STANDALONE=y
 # SBC only (LC3 is floating point, ~85 MIPS on this FPU-less RISC-V core).

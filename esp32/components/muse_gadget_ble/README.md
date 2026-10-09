@@ -76,10 +76,16 @@ a *companion*. This is a second companion (`main/mg_glue.c` registers it):
 `CONFIG_MUSE_GADGET_BLE_STANDALONE` turns a board into a musegadgets gadget
 and nothing else, for boards without PSRAM (the Waveshare C6 profile `c6ble`)
 or for testing the apps. `app_run()` hands over to `run_ble_standalone()`
-before Wi-Fi: Wi-Fi, Link setup and its advertising, the Muse session, the
-tunnel and OTA never start, and Muse's phone setup service and Wi-Fi keeper
-aren't registered. Link's BLE server still hosts the GATT database, with no
-setup callbacks, and only the musegadgets UUID advertises. The routing policy
+before Wi-Fi: Wi-Fi, the Muse session, the tunnel and OTA never start, and
+Muse's phone setup service and Wi-Fi keeper aren't registered. Link setup
+runs without Wi-Fi (`device_info` says `wifi: "none"`): until the gadget is
+set up it advertises setup, taking turns with the musegadgets UUID, and takes
+community pairing v5 (the talk button confirms), token-only `provision_v2`,
+`device_info` and `unpair`; `wifi_scan` answers `error_wifi_unsupported` and
+OTA isn't there. Set up means the setup marker and the proof key; a boot that
+finds anything less (a power cut midway, or a setup from Wi-Fi firmware)
+erases it and starts setup again. Afterwards only the musegadgets UUID
+advertises. The routing policy
 is BLE only, the offline queue is on by default (a client can turn it off),
 and without PSRAM a queued clip is staged in internal RAM, up to about 8 s of
 SBC. The screen follows the client's state (`mg_ble_link()`, `mg_link.h`):
@@ -244,11 +250,12 @@ unreported. `tools/mg_ble_client.py bench` drives it.
 
 ## Token proof
 
-`mg_command_token_proof` (34; mgcommands.h, Token proof) is listed when the
-board supplies the proof key and the clear (`mg_ble_platform_t.proof_key`,
-`proof_clear`). K = HKDF-SHA256(salt "mg token proof v1", the access token as
-provisioned, the node id) comes from the board, and this component keeps it
-only for one HMAC.
+`mg_command_token_proof` (34; mgcommands.h, Token proof) is listed on every
+gadget build. Link setup derives K = HKDF-SHA256(salt "mg token proof v1",
+the access token as provisioned, the node id) and stores it beside the tokens
+as `mg_proof_k` (hex) in Link's config; `main/mg_glue.c` hands it to this
+component (`mg_ble_platform_t.proof_key`), which keeps it only for one HMAC.
+A token refresh never changes it; reset or clear erases it.
 
 - **challenge** [16-byte client nonce]: a fresh 16-byte device nonce from
   `esp_fill_random`, then response [device nonce, HMAC-SHA256(K, "mg token
@@ -256,8 +263,9 @@ only for one HMAC.
   computed now, and K wiped. No key: `not_found`. A new challenge restarts.
 - **confirm** [32-byte MAC]: compared in constant time, result 1 or 0; one
   confirm per challenge, else `invalid_value`.
-- **clear** after result 1 on this connection: result 1, then the board's
-  `proof_clear` erases the tokens and K. Before a match: `proof_required`.
+- **clear** after result 1 on this connection: result 1, then the board
+  erases the tokens, K and the setup markers and restarts into Link setup
+  (`app_gadget_clear_setup()`). Before a match: `proof_required`.
 - Nonces, the expected MAC and the match are wiped at every connect and
   disconnect. Nothing else waits on the proof.
 - **Logs** never show a token or K: lengths and the first 4 bytes of a

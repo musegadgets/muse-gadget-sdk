@@ -444,20 +444,37 @@ its constants.
   Muse's phone setup: keep `ble_server_set_companion()` to two companions, and
   keep Link's setup advertising and `ble_server_full_shutdown()` behaviour
   unchanged for builds without it.
-- **Token proof:** `mg_command_token_proof` (34) (`mg_token_proof.c`, PSA
-  HMAC): the client proves it holds the key setup left, without sending the
-  token. It gates nothing. The board supplies the key and the clear
-  (`mg_ble_platform_t.proof_key`, `proof_clear`); without them it isn't
-  offered.
+- **Setup and device tokens** go through Link's BLE setup, not mgcommands
+  (`../protocols/README.md`, Gadget setup over Muse Link). Gadget builds add
+  `wifi` (`"optional"`, or `"none"` BLE-only) and `mgcommands: 1` to
+  `device_info` (`link_pairing_set_gadget()`); `provision_v2` without an ssid
+  is token-only: the pair in Link's `access_token` / `refresh_token`, the
+  token proof key `mg_proof_k` (hex), `setup_wifi=skipped` and
+  `setup_complete`, all in one commit under the provisioning session
+  (`commit_setup()` in `main/app.c`), `auth_ok` only after it, then Link
+  setup advertising stops while musegadgets advertising goes on. A Wi-Fi
+  setup on a gadget stores the key too. Boot recovery keeps a token-only
+  setup; reset (hold, the Muse menu, or the token proof's clear) erases all
+  of it. Never log the tokens or the key; lengths and a SHA-256 prefix are
+  fine. Builds without gadget support behave as before (no `wifi` field,
+  Wi-Fi required).
+- **Token proof:** `mg_command_token_proof` (34) on every gadget build
+  (`mg_token_proof.c`, PSA HMAC): the client proves it holds the key setup
+  left, without sending the token. It gates nothing; `clear` after a match
+  resets setup and restarts the board into Link setup advertising.
 - **BLE only:** `CONFIG_MUSE_GADGET_BLE_STANDALONE=y` makes a board a
   musegadgets gadget and nothing else: `app_run()` hands over to
-  `run_ble_standalone()` before Wi-Fi, so Wi-Fi, Link setup and its
-  advertising, the Muse session, the tunnel and OTA never start, and
-  push-to-talk goes to the client or the offline queue (policy BLE only).
-  The Waveshare C6 has a profile for it: `tools/muse/board.sh build c6ble`
-  (`devices/sdkconfig.muse-waveshare-c6-18-ble`, SBC only). A
-  healthy boot logs `musegadgets BLE ready` and `BLE-only musegadgets gadget`,
-  and the heartbeat shows free internal RAM.
+  `run_ble_standalone()` before Wi-Fi, so Wi-Fi, the Muse session, the
+  tunnel and OTA never start, and push-to-talk goes to the client or the
+  offline queue (policy BLE only). Link setup runs without Wi-Fi: until the
+  gadget is set up (the setup marker and the proof key; anything less is
+  wiped at boot) it advertises setup, taking turns with the musegadgets UUID
+  from the same address, and accepts community pairing v5 (the talk button
+  confirms), token-only `provision_v2`, `device_info` and `unpair`. The
+  Waveshare C6 has a profile for it: `tools/muse/board.sh build c6ble`
+  (`devices/sdkconfig.muse-waveshare-c6-18-ble`, SBC only). A healthy boot
+  logs `musegadgets BLE ready` and `BLE-only musegadgets gadget`, and the
+  heartbeat shows the setup stage and free internal RAM.
 - **Playback:** boards with a speaker (the boards with the full UI) offer
   `mg_command_stream_audio`: SBC, PCM and (with LC3 on) LC3 from the client,
   at 8 to 48 kHz resampled to 16 kHz, into a 16 KB ring
@@ -496,8 +513,9 @@ its constants.
 - **Test** with the host tests below: `test_mg_ble` (protocol, routing,
   queue, the token proof against `../protocols/test-vectors/mg-token-proof-v1.json`),
   `test_mg_token_proof` (the same on the device's PSA code; needs `IDF_PATH`
-  like `test_link_pairing_handshake`), `test_mg_codecs` (SBC and LC3 round
-  trips), `test_mg_play`
+  like `test_link_pairing_handshake`), `test_link_gadget_setup` (Wi-Fi-optional
+  `provision_v2`, the token-only commit and its rollback, BLE-only boot
+  recovery), `test_mg_codecs` (SBC and LC3 round trips), `test_mg_play`
   (playback: resampler, ring, decoders) and `test_mg_ble_client` (the bench
   client's parsing and decoding, and its `play` flow control against the
   firmware's protocol code). Build the

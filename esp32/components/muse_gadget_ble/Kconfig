@@ -12,7 +12,9 @@ menu "Muse Gadget BLE audio (musegadgets protocol)"
             on push-to-talk gets each utterance as SBC or LC3 over BLE
             instead of it going to Muse over Wi-Fi (see the routing policy
             below). The BLE stack then stays up after setup, advertising the
-            musegadgets service. Off by default; nothing changes without it.
+            musegadgets service, and Home Link's BLE setup can skip Wi-Fi
+            (token-only setup) and leaves a key for the token proof. Off by
+            default; nothing changes without it.
 
     if MUSE_GADGET_BLE_AUDIO
 
@@ -21,12 +23,13 @@ menu "Muse Gadget BLE audio (musegadgets protocol)"
         depends on MUSE_ENABLED || HOMEHUB_VOICE
         default n
         help
-            Runs the board as a musegadgets BLE gadget and nothing else: Wi-Fi,
-            Home Link setup and its advertising, the Muse session over Wi-Fi,
-            the home-network tunnel and over-the-air updates are never
-            started, so their RAM stays free (what lets boards without PSRAM,
-            like the Waveshare C6, run it). Only the musegadgets services
-            (with Battery, Device Information and Nordic UART) advertise.
+            Runs the board as a musegadgets BLE gadget and nothing else:
+            Wi-Fi, the Muse session over Wi-Fi, the home-network tunnel and
+            over-the-air updates are never started, so their RAM stays free
+            (what lets boards without PSRAM, like the Waveshare C6, run it).
+            Home Link's BLE setup still runs, without Wi-Fi: until the Muse
+            app has set the gadget up (its device tokens, confirmed with the
+            talk button) it advertises setup beside the musegadgets service.
             Push-to-talk goes to the connected client, else to the offline
             queue, else it's refused.
 

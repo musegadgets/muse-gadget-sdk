@@ -27,6 +27,7 @@
 static const char *TAG = "link.config";
 static const char *NS = "homehub";
 static const char *SETUP_COMPLETE_KEY = "setup_complete";
+static const char *SETUP_WIFI_KEY = "setup_wifi";
 
 static bool nvs_encryption_possible(void) {
 #ifndef CONFIG_NVS_ENCRYPTION
@@ -161,6 +162,7 @@ bool config_clear_pairing(void) {
         "auth_token",
         "vm_url",
         "username",
+        "mg_proof_k",
     };
     return clear_and_verify(keys, sizeof(keys) / sizeof(keys[0]));
 }
@@ -180,6 +182,8 @@ bool config_clear_setup(void) {
         "wifi_channel",
         "wifi_others",
         "wifi_hidden",
+        "mg_proof_k",
+        "setup_wifi",
         "setup_complete",
     };
     return clear_and_verify(keys, sizeof(keys) / sizeof(keys[0]));
@@ -208,6 +212,16 @@ bool config_setup_complete(void) {
 
 bool config_mark_setup_complete(void) {
     return config_set_str(SETUP_COMPLETE_KEY, "1");
+}
+
+bool config_wifi_skipped(void) {
+    char value[8] = {0};
+    return config_get_str(SETUP_WIFI_KEY, value, sizeof(value))
+           && strcmp(value, "skipped") == 0;
+}
+
+bool config_mark_wifi_skipped(void) {
+    return config_set_str(SETUP_WIFI_KEY, "skipped");
 }
 
 bool config_clear_setup_complete(void) {

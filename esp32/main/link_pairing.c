@@ -85,6 +85,8 @@ static const char *s_sdk_token;
 static const char *s_device_id = "";
 static const char *s_mac = "";
 static const char *s_firmware_version = "";
+static link_wifi_mode_t s_wifi_mode = LINK_WIFI_REQUIRED;
+static bool s_mgcommands;
 
 static mbedtls_ecp_group s_group;
 static mbedtls_mpi s_device_priv;
@@ -698,6 +700,19 @@ void link_pairing_init(const char *node_id, const char *device_id,
     lock_give();
 }
 
+void link_pairing_set_gadget(link_wifi_mode_t wifi, bool mgcommands) {
+    s_wifi_mode = wifi;
+    s_mgcommands = mgcommands;
+}
+
+link_wifi_mode_t link_pairing_wifi_mode(void) {
+    return s_wifi_mode;
+}
+
+bool link_pairing_mgcommands(void) {
+    return s_mgcommands;
+}
+
 void link_pairing_add_device_info(cJSON *root) {
     if (!root) return;
     cJSON_AddStringToObject(root, "device_id", s_device_id);
@@ -708,6 +723,12 @@ void link_pairing_add_device_info(cJSON *root) {
     cJSON_AddNumberToObject(root, "pairing_auth_epoch",
                             pairing_auth_epoch());
     cJSON_AddStringToObject(root, "pairing_policy", PAIRING_POLICY_BUTTON);
+    // Absent means "required": firmware without gadget support sends neither.
+    if (s_wifi_mode != LINK_WIFI_REQUIRED) {
+        cJSON_AddStringToObject(root, "wifi",
+                                s_wifi_mode == LINK_WIFI_NONE ? "none" : "optional");
+    }
+    if (s_mgcommands) cJSON_AddNumberToObject(root, "mgcommands", 1);
 }
 
 bool link_pairing_plaintext_setup_blocked(void) {

@@ -108,7 +108,9 @@ Push-to-talk over BLE is the musegadgets BLE protocol
 ([`components/muse_gadget_ble`](../components/muse_gadget_ble/README.md)): an
 app connected over BLE that turns on push-to-talk gets the talk button's audio
 as SBC or LC3, and otherwise it goes to Muse over Wi-Fi as before. It's on for
-the Waveshare S3 1.75C. Other boards with a mic and PSRAM can opt in: add
+the Waveshare S3 1.75C, where the Muse app's setup can skip Wi-Fi and the app
+checks the gadget's token with the token proof on each connection. Other
+boards with a mic and PSRAM can opt in: add
 `CONFIG_MUSE_GADGET_BLE_AUDIO=y` to their overlay to try it (of them, only the
 Voice PE has been built with it, and none run). Offline clips need
 `partitions_muse.csv`, so the StickS3, StickC Plus2 and Voice PE don't offer
@@ -122,7 +124,10 @@ says `READY` only while the app is connected with push-to-talk on
 (`DISCONNECTED`, `CONNECTING` or `APP CONNECTED` otherwise, and `OPEN MUSE
 APP` until it's set up), and the talk button's audio goes
 to the app as SBC, or to the offline queue (clips of up to about 8 s) while no
-app is connected. Build the normal `c6` profile to go back.
+app is connected. The Muse app sets it up over BLE without Wi-Fi: pick it,
+press the talk button when the pairing card asks, and the app stores the
+gadget's device tokens; holding reset (or the menu's reset) sets it up again.
+Build the normal `c6` profile to go back.
 
 Boards without PSRAM (the ideaspark, the C6 boards, the Cardputer ADV and the AI Passport) don't have room for
 the home-network tunnel. Muse can still reach and control them once the

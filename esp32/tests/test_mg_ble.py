@@ -125,14 +125,29 @@ class MgBleTest(unittest.TestCase):
     def test_standalone_starts_no_wifi_session_or_ota(self) -> None:
         # CONFIG_MUSE_GADGET_BLE_STANDALONE: app_run hands over to
         # run_ble_standalone() before Wi-Fi, which never returns and starts
-        # none of Wi-Fi, setup advertising, the Muse session, the tunnel or OTA.
+        # none of Wi-Fi, the Muse session, the tunnel or OTA. Link's BLE setup
+        # runs (token-only, wifi "none") until the gadget is set up.
         app = (ROOT / "main/app.c").read_text()
         start = app.index("static void __attribute__((noreturn)) run_ble_standalone(void) {")
         body = app[start:app.index("\n}\n", start)]
-        for call in ("wifi_mgr_init", "noise_ctrl_init", "ble_server_begin_advertising", "tunnel_netif",
-                     "ota_verify_task", "net_discovery", "muse_glue_link_ready", "start_ble_setup_server"):
+        for call in ("wifi_mgr_init", "noise_ctrl_init", "tunnel_netif", "ota_verify_task", "net_discovery",
+                     "muse_glue_link_ready", "ble_server_start(identity_ble_name(), NULL)"):
             self.assertNotIn(call, body)
-        self.assertIn("ble_server_start(identity_ble_name(), NULL)", body)
+        self.assertIn("start_ble_setup_server_if_needed();", body)
+        self.assertIn('open_setup_window("boot: not set up");', body)
+        self.assertLess(body.index("config_clear_setup()"), body.index("start_ble_setup_server_if_needed();"))
+        server = app[app.index("static void start_ble_setup_server_if_needed(void) {"):]
+        server = server[:server.index("\n}\n")]
+        self.assertIn(".on_wifi_scan = on_wifi_scan_unsupported,", server)
+        self.assertIn(".on_ota = NULL,", server)
+        self.assertIn("link_pairing_set_gadget(LINK_WIFI_NONE, true);", app)
+        self.assertIn("link_pairing_set_gadget(LINK_WIFI_OPTIONAL, true);", app)
+        # The standalone provisioning path holds no Wi-Fi code.
+        provision = app[app.index("static void on_provision("):]
+        standalone_provision = provision[provision.index("#if CONFIG_MUSE_GADGET_BLE_STANDALONE"):
+                                         provision.index("#else")]
+        self.assertNotIn("wifi_mgr", standalone_provision)
+        self.assertIn("provision_token_only_with_gate_held(", standalone_provision)
         run = app[app.index("void app_run(void) {"):]
         self.assertLess(run.index("run_ble_standalone();"), run.index("wifi_mgr_init();"))
         glue = (ROOT / "main/muse_glue.c").read_text()

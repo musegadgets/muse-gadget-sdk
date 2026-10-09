@@ -144,8 +144,10 @@ class LinkEncryptedPairingContractTest(unittest.TestCase):
         self.assertIn('decrypted && strcmp(act, "provision_v2") == 0', dispatch)
         self.assertIn('cJSON_GetObjectItem(root, "token_type")', dispatch)
         self.assertIn("link_pairing_mark_provisioning_active()", dispatch)
-        self.assertIn('strcmp(tt->valuestring, "device") != 0', dispatch)
-        self.assertIn('!cJSON_IsString(rt) || !rt->valuestring || !*rt->valuestring', dispatch)
+        self.assertIn('strcmp(tt->valuestring, "device") == 0', dispatch)
+        self.assertIn('cJSON_IsString(rt) && rt->valuestring && *rt->valuestring', dispatch)
+        # Every Wi-Fi mode still needs the whole token pair.
+        self.assertIn("} else if (!tokens_ok || (!token_only && !wifi_ok)) {", dispatch)
 
         provision_v2_block = _function_body(
             dispatch, 'decrypted && strcmp(act, "provision_v2") == 0'
@@ -417,7 +419,7 @@ class LinkEncryptedPairingContractTest(unittest.TestCase):
         self.assertIn("a->session_generation);", worker)
         self.assertNotIn("ble_server_send_status(", on_provision)
         completion = _function_body(app, "static bool complete_setup_and_stop_ble(")
-        self.assertIn("link_pairing_commit_provisioning(session_generation, config_mark_setup_complete)", completion)
+        self.assertIn("link_pairing_commit_provisioning(session_generation, commit_setup)", completion)
         failure = _function_body(app, "static void setup_fail_for_session(")
         self.assertIn("!link_pairing_session_is_current(session_generation)", failure)
         self.assertIn("ble_server_disconnect_pairing_session(session_generation)", failure)

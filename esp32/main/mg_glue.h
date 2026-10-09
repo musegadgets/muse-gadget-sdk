@@ -21,3 +21,6 @@
 // CONFIG_MUSE_GADGET_BLE_AUDIO. Call from app_run() once NVS is up, before
 // the BLE server starts.
 void mg_glue_start(void);
+
+// Link setup stored or erased the token proof key ("mg_proof_k").
+void mg_glue_setup_changed(void);

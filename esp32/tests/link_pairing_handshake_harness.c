@@ -147,6 +147,30 @@ static void check_device_info(bool community, int epoch) {
     assert(cJSON_GetObjectItem(info, "pairing_auth_epoch")->valueint == epoch);
     assert(strcmp(cJSON_GetObjectItem(info, "pairing_auth")->valuestring,
                   community ? PAIRING_COMMUNITY_AUTH : PAIRING_AUTH) == 0);
+    // Without gadget support both fields stay absent ("wifi" absent = required).
+    assert(link_pairing_wifi_mode() != LINK_WIFI_REQUIRED
+           || (cJSON_GetObjectItem(info, "wifi") == NULL
+               && cJSON_GetObjectItem(info, "mgcommands") == NULL));
+    cJSON_Delete(info);
+}
+static void check_gadget_device_info(void) {
+    static const struct { link_wifi_mode_t mode; const char *wifi; } cases[] = {
+        { LINK_WIFI_OPTIONAL, "optional" }, { LINK_WIFI_NONE, "none" },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        link_pairing_set_gadget(cases[i].mode, true);
+        assert(link_pairing_wifi_mode() == cases[i].mode && link_pairing_mgcommands());
+        cJSON *info = cJSON_CreateObject();
+        link_pairing_add_device_info(info);
+        assert(strcmp(cJSON_GetObjectItem(info, "wifi")->valuestring, cases[i].wifi) == 0);
+        assert(cJSON_GetObjectItem(info, "mgcommands")->valueint == 1);
+        assert(cJSON_GetObjectItem(info, "pairing_protocol")->valueint == 5);
+        cJSON_Delete(info);
+    }
+    link_pairing_set_gadget(LINK_WIFI_REQUIRED, false);
+    cJSON *info = cJSON_CreateObject();
+    link_pairing_add_device_info(info);
+    assert(!cJSON_GetObjectItem(info, "wifi") && !cJSON_GetObjectItem(info, "mgcommands"));
     cJSON_Delete(info);
 }
 static void verify_official_proof(cJSON *ready) {
@@ -415,7 +439,8 @@ int main(void) {
     stale_confirmation_work_cannot_affect_replacement();
     provisioning_and_scan_work_cannot_cross_sessions();
     pairing_confirmed_carries_sdk_token();
-    printf("PASS actual pairing: eFuse=%d, explicit auth/policy agreement, encrypted finished/confirmation/replay/timeouts\n",
+    check_gadget_device_info();
+    printf("PASS actual pairing: eFuse=%d, explicit auth/policy agreement, encrypted finished/confirmation/replay/timeouts, gadget device_info\n",
            TEST_PAIRING_EFUSE_AUTH);
     return 0;
 }

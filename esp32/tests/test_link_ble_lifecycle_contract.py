@@ -92,10 +92,16 @@ class LinkBleLifecycleContractTest(unittest.TestCase):
         self.assertIn('decrypted && strcmp(act, "provision_v2") == 0', dispatch)
         self.assertIn('complete_setup_and_stop_ble("provision", session_generation)', source)
         complete = _function_body(source, "static bool complete_setup_and_stop_ble(")
-        self.assertIn("config_mark_setup_complete()", complete)
-        self.assertIn("ble_server_full_shutdown()", complete)
-        advertise = _function_body(BLE_SERVER_C.read_text(), "static void start_advertising(void) {")
-        self.assertIn("if (config_setup_complete()) return;", advertise)
+        self.assertIn("link_pairing_commit_provisioning(session_generation, commit_setup)", complete)
+        self.assertIn("stop_setup_ble(reason)", complete)
+        commit = _function_body(source, "static bool commit_setup(void) {")
+        self.assertTrue(commit.rstrip().endswith("return config_mark_setup_complete();"))
+        self.assertIn("ble_server_full_shutdown()", _function_body(source, "static void stop_setup_ble("))
+        ble = BLE_SERVER_C.read_text()
+        self.assertIn("if (!advertising_wanted(&link, &other)) return;",
+                      _function_body(ble, "static void start_advertising(void) {"))
+        self.assertIn("if (config_setup_complete()) return false;",
+                      _function_body(ble, "static bool advertising_wanted("))
 
     def test_auth_rejection_does_not_reopen_setup(self) -> None:
         body = _function_body(APP_C.read_text(), "static void handle_token_revoked_unlocked(")
@@ -291,7 +297,9 @@ int main(void) {
         self.assertIn("nimble_port_stop()", shutdown)
         self.assertIn("nimble_port_deinit()", shutdown)
         self.assertIn("if (s_shutting_down) return", start_adv)
-        self.assertIn("if (!s_advertising_enabled) return", start_adv)
+        self.assertIn("if (!advertising_wanted(&link, &other)) return", start_adv)
+        self.assertIn("if (!s_advertising_enabled) return false",
+                      _function_body(source, "static bool advertising_wanted("))
         self.assertIn("if (!s_shutting_down && s_advertising_enabled) start_advertising()", gap)
         self.assertIn("s_advertising_enabled = true", begin_adv)
         self.assertIn("s_advertising_enabled = false", stop_adv)

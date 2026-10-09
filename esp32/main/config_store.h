@@ -22,7 +22,9 @@
 // Persistent key/value config stored in NVS.
 // Setup keys: ssid, password, wifi_channel, wifi_others, wifi_hidden (see
 // wifi_known.h), access_token, refresh_token, vm_url, username, api_url,
-// api_url_v2, noise_host, setup_complete. Device-level keys are
+// api_url_v2, noise_host, setup_complete, and on gadgets setup_wifi
+// ("skipped" after token-only setup) and mg_proof_k (the token proof key,
+// hex). Device-level keys are
 // preserved by config_clear_pairing() and config_clear_setup().
 // auth_token is a legacy alias from early Link firmware and is only kept
 // long enough to migrate by minting a device token pair.
@@ -42,13 +44,14 @@ bool config_set_str(const char *key, const char *value);
 bool config_erase_key(const char *key);
 config_key_lookup_t config_key_lookup(const char *key);
 
-// Pairing convenience: removes tokens, vm_url, username, account-specific
-// endpoint overrides.
+// Pairing convenience: removes tokens (and the token proof key), vm_url,
+// username, account-specific endpoint overrides.
 // WiFi credentials and any device-level keys are preserved.
 bool config_clear_pairing(void);
 
-// Full local setup reset: removes WiFi, tokens, vm_url, username, endpoint
-// overrides, and the setup-complete marker. Returns true
+// Full local setup reset: removes WiFi, tokens, the token proof key, vm_url,
+// username, endpoint overrides, and the setup-complete and Wi-Fi-skipped
+// markers. Returns true
 // only after every credential is durably erased and a readback reports it absent.
 // Device-level keys are preserved.
 bool config_clear_setup(void);
@@ -57,3 +60,7 @@ bool config_is_provisioned(void);
 bool config_setup_complete(void);
 bool config_mark_setup_complete(void);
 bool config_clear_setup_complete(void);
+// Token-only gadget setup records that it skipped Wi-Fi, so boot recovery
+// keeps a setup without Wi-Fi credentials.
+bool config_wifi_skipped(void);
+bool config_mark_wifi_skipped(void);

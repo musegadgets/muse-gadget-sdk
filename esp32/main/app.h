@@ -60,6 +60,12 @@ bool app_confirm_pairing_press(void);
 void app_reset_setup_async(void);
 #endif
 
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+// The token proof's clear (mgcommands.h): erases the tokens, the proof key
+// and the setup markers, then restarts into Link setup. From any task.
+void app_gadget_clear_setup(void);
+#endif
+
 #if CONFIG_MUSE_ENABLED || CONFIG_HOMEHUB_VOICE
 // Looks up a VM credential from the paired account (want_vm: a VM id, or empty
 // for the preferred VM). *vm_token is heap; free() it.

@@ -164,7 +164,8 @@ class LinkPairingStateContractTest(unittest.TestCase):
         body = _function_body(APP_C.read_text(), "void app_run(")
         # Legacy provisioned->setup_complete migration only fires when Wi-Fi
         # creds are also present (a token without Wi-Fi is a partial pair).
-        self.assertIn("if (!setup_complete && provisioned && have_wifi)", body)
+        # A gadget's token-only setup (Wi-Fi skipped) is never taken for one.
+        self.assertIn("if (!setup_complete && provisioned && have_wifi && !wifi_skipped)", body)
 
     def test_wifi_connect_polls_past_wifi_state(self) -> None:
         body = _function_body(WIFI_MGR_C.read_text(), "bool wifi_mgr_connect(")

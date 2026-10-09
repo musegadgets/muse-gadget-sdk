@@ -17,10 +17,13 @@
 #include "mg_glue.h"
 
 #include <stddef.h>
+#include <string.h>
 
 #include "sdkconfig.h"
 
+#include "app.h"
 #include "ble_server.h"
+#include "config_store.h"
 #include "mg_ble.h"
 
 #if CONFIG_MUSE_ENABLED
@@ -79,8 +82,35 @@ static const char *model(void) {
 }
 #endif
 
+// The token proof key Link setup stored in its config, as 64 hex digits.
+static bool proof_key(uint8_t k[MG_TOKEN_PROOF_KEY_LEN]) {
+    char hex[2 * MG_TOKEN_PROOF_KEY_LEN + 1] = {0};
+    bool ok = config_get_str("mg_proof_k", hex, sizeof(hex))
+              && strlen(hex) == 2 * MG_TOKEN_PROOF_KEY_LEN;
+    for (int i = 0; ok && i < MG_TOKEN_PROOF_KEY_LEN; i++) {
+        uint8_t b = 0;
+        for (int j = 0; j < 2; j++) {
+            char c = hex[2 * i + j];
+            int v = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+            ok = ok && v >= 0;
+            b = (uint8_t)(b << 4 | (v & 0x0f));
+        }
+        k[i] = b;
+    }
+    mg_token_proof_wipe(hex, sizeof(hex));
+    if (!ok) mg_token_proof_wipe(k, MG_TOKEN_PROOF_KEY_LEN);
+    return ok;
+}
+
+void mg_glue_setup_changed(void) {
+    mg_ble_setup_changed();
+}
+
 void mg_glue_start(void) {
     static const mg_ble_platform_t platform = {
+        // The token proof: K from Link setup; clear resets setup.
+        .proof_key = proof_key,
+        .proof_clear = app_gadget_clear_setup,
 #if CONFIG_MUSE_ENABLED
         .model = model,
         .battery_pct = battery_pct,

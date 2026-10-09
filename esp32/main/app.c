@@ -83,6 +83,7 @@
 #endif
 #if CONFIG_MUSE_GADGET_BLE_AUDIO
 #include "mg_glue.h"
+#include "mg_token_proof.h"
 #endif
 #if CONFIG_MUSE_GADGET_BLE_STANDALONE
 #include "mg_ble.h"
@@ -585,6 +586,8 @@ static bool clear_setup_credentials(void) {
 // here; BLE is left as-is for the caller to keep advertising or reboot. Success
 // means NVS committed every erase and readback verified each credential absent.
 static void setup_disconnect_to_clean(void) {
+#if !CONFIG_MUSE_GADGET_BLE_STANDALONE
+    // A BLE-only gadget never starts Wi-Fi, the VM session or the tunnel.
     disconnect_vm_transports();
     vm_api_set_base_url(NULL);
     noise_ctrl_set_host(NULL);
@@ -592,6 +595,7 @@ static void setup_disconnect_to_clean(void) {
     s_muse_resume_vm = false;
 #endif
     wifi_mgr_disconnect();
+#endif
     ui_set_vm(NULL);
     ui_set_wifi(NULL);
 #if CONFIG_HOMEHUB_SUPPORT_BUG_REPORT
@@ -669,18 +673,71 @@ static void shutdown_ble_task(void *arg) {
     vTaskDelete(NULL);
 }
 
-static bool complete_setup_and_stop_ble(const char *reason, uint32_t session_generation) {
-    if (session_generation != 0) {
-        if (!link_pairing_commit_provisioning(session_generation, config_mark_setup_complete)) {
-            return false;
-        }
-    } else if (!config_mark_setup_complete()) {
-        ESP_LOGW(TAG, "failed to mark setup complete");
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+// The gadget's part of a provisioning commit (protocols/README.md, Gadget
+// setup over Muse Link), filled by the operation gate's holder.
+static struct {
+    bool attempted;         // the commit callback ran (the session was still current)
+    bool token_only;        // store the pair and the Wi-Fi-skipped marker too
+    const char *access_token;
+    const char *refresh_token;
+    bool have_key;
+    uint8_t key[MG_TOKEN_PROOF_KEY_LEN];
+} s_gadget_commit;
+
+static void gadget_commit_clear(void) {
+    mg_token_proof_wipe(&s_gadget_commit, sizeof(s_gadget_commit));
+}
+
+// K from the access token as provisioned and the node id device_info
+// reports. Kept until reset: a later token refresh doesn't change it.
+static bool gadget_commit_prepare(bool token_only, const char *access_token,
+                                  const char *refresh_token) {
+    gadget_commit_clear();
+    s_gadget_commit.token_only = token_only;
+    s_gadget_commit.access_token = access_token;
+    s_gadget_commit.refresh_token = refresh_token;
+    s_gadget_commit.have_key = link_pairing_mgcommands()
+        && mg_token_proof_key(access_token, identity_node_id(), s_gadget_commit.key);
+    return !link_pairing_mgcommands() || s_gadget_commit.have_key;
+}
+#endif
+
+// Runs under the pairing lock (link_pairing_commit_provisioning). The setup
+// marker goes last, so a power cut midway leaves a partial setup that boot
+// recovery erases; token-only setup writes its Wi-Fi-skipped marker first so
+// that partial state is never mistaken for a Wi-Fi pair.
+static bool commit_setup(void) {
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+    s_gadget_commit.attempted = true;
+    if (s_gadget_commit.token_only
+        && (!config_mark_wifi_skipped()
+            || !config_set_str("refresh_token", s_gadget_commit.refresh_token)
+            || !config_set_str("access_token", s_gadget_commit.access_token)
+            || !config_erase_key("auth_token"))) {
+        return false;
     }
+    if (s_gadget_commit.have_key) {
+        static const char digits[] = "0123456789abcdef";
+        char hex[2 * MG_TOKEN_PROOF_KEY_LEN + 1];
+        for (int i = 0; i < MG_TOKEN_PROOF_KEY_LEN; i++) {
+            hex[2 * i] = digits[s_gadget_commit.key[i] >> 4];
+            hex[2 * i + 1] = digits[s_gadget_commit.key[i] & 0x0f];
+        }
+        hex[sizeof(hex) - 1] = '\0';
+        bool stored = config_set_str("mg_proof_k", hex);
+        mg_token_proof_wipe(hex, sizeof(hex));
+        if (!stored) return false;
+    }
+#endif
+    return config_mark_setup_complete();
+}
+
+static void stop_setup_ble(const char *reason) {
     setup_window_lock_take();
     advance_confirm_generation_locked();
     setup_window_lock_give();
-    if (!s_ble_started) return true;
+    if (!s_ble_started) return;
     ESP_LOGI(TAG, "setup complete via %s; stopping BLE", reason);
     if (xTaskCreate(shutdown_ble_task, "ble_stop", 4096, NULL, 4, NULL) != pdPASS) {
         ESP_LOGW(TAG, "failed to start BLE stop task");
@@ -692,6 +749,17 @@ static bool complete_setup_and_stop_ble(const char *reason, uint32_t session_gen
         ble_server_full_shutdown();
 #endif
     }
+}
+
+static bool complete_setup_and_stop_ble(const char *reason, uint32_t session_generation) {
+    if (session_generation != 0) {
+        if (!link_pairing_commit_provisioning(session_generation, commit_setup)) {
+            return false;
+        }
+    } else if (!config_mark_setup_complete()) {
+        ESP_LOGW(TAG, "failed to mark setup complete");
+    }
+    stop_setup_ble(reason);
     return true;
 }
 
@@ -1148,6 +1216,64 @@ static bool start_wifi_join_ota_if_requested(const char *url, bool force,
     return true;
 }
 
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+// Token-only provisioning on a gadget (no ssid): the token pair, the proof
+// key and both setup markers in one commit under this provisioning session,
+// auth_ok only once that commit holds, and no Wi-Fi, VM or wifi_* status.
+static void provision_token_only_with_gate_held(const char *access_token,
+                                                const char *refresh_token,
+                                                const char *username,
+                                                const char *api_url,
+                                                const char *api_url_v2,
+                                                const char *noise_host,
+                                                uint32_t session_generation) {
+    setup_stage_set("auth");
+    if (link_pairing_wifi_mode() != LINK_WIFI_NONE) {
+        // Kept for a device that joins Wi-Fi later, as the Wi-Fi path does.
+        bool saved = (api_url && *api_url
+                          ? config_set_str("api_url", api_url) : config_erase_key("api_url"))
+                     && (api_url_v2 && *api_url_v2
+                          ? config_set_str("api_url_v2", api_url_v2) : config_erase_key("api_url_v2"))
+                     && (noise_host && *noise_host
+                          ? config_set_str("noise_host", noise_host) : config_erase_key("noise_host"));
+        if (saved) {
+            auth_lock_take();
+            store_pairing_username_unlocked(username);
+            auth_lock_give();
+        }
+        if (!saved) {
+            setup_fail_for_session("storage", "error_storage", session_generation);
+            return;
+        }
+    }
+    if (!require_provisioning_pairing_session(session_generation)) return;
+    bool ok = gadget_commit_prepare(true, access_token, refresh_token)
+              && link_pairing_commit_provisioning(session_generation, commit_setup);
+    bool attempted = s_gadget_commit.attempted || !s_gadget_commit.have_key;
+    gadget_commit_clear();
+    if (!ok) {
+        // A commit that ran (or a key that couldn't be derived) is a storage
+        // failure; a session that went away first is a pairing one.
+        setup_fail_for_session(attempted ? "storage" : "pairing",
+                               attempted ? "error_storage" : "auth_failed",
+                               session_generation);
+        return;
+    }
+    auth_lock_take();
+    note_access_token_fresh();
+    auth_lock_give();
+    ESP_LOGI(TAG, "token-only setup stored (access %u B, refresh %u B); Wi-Fi skipped",
+             (unsigned)strlen(access_token), (unsigned)strlen(refresh_token));
+    setup_stage_set("done");
+    ui_set_status("auth_ok");
+    led_status_set_state(LED_STATE_AUTH_OK);
+    mg_glue_setup_changed();
+    ble_server_send_pairing_status("auth_ok", session_generation);
+    // Link setup advertising stops; musegadgets advertising goes on.
+    stop_setup_ble("token-only provision");
+}
+#endif
+
 static void on_provision(const char *ssid, const char *password,
                          const char *access_token,
                          const char *refresh_token,
@@ -1166,6 +1292,27 @@ static void on_provision(const char *ssid, const char *password,
     // A queued callback may be stale before it ever owned the operation gate.
     // It has no partial state to roll back and must not erase a later setup.
     if (!link_pairing_provisioning_session_valid(session_generation)) goto done;
+
+#if CONFIG_MUSE_GADGET_BLE_STANDALONE
+    // wifi "none": ble_server.c refuses any request with an ssid, and the
+    // Wi-Fi path below stays out of this build.
+    (void)ssid;
+    (void)password;
+    (void)ota_url;
+    (void)ota_force;
+    provision_token_only_with_gate_held(access_token, refresh_token, username,
+                                        api_url, api_url_v2, noise_host,
+                                        session_generation);
+#else
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+    // ble_server.c passes no ssid only for a gadget's token-only request.
+    if (!*ssid && link_pairing_wifi_mode() != LINK_WIFI_REQUIRED) {
+        provision_token_only_with_gate_held(access_token, refresh_token, username,
+                                            api_url, api_url_v2, noise_host,
+                                            session_generation);
+        goto done;
+    }
+#endif
 
     setup_stage_set("wifi");
     ble_server_send_pairing_status("wifi_connecting", session_generation);
@@ -1229,7 +1376,16 @@ static void on_provision(const char *ssid, const char *password,
     if (!require_provisioning_pairing_session(session_generation)) goto done;
     ui_set_status("auth_ok");
     led_status_set_state(LED_STATE_AUTH_OK);
-    if (!complete_setup_and_stop_ble("provision", session_generation)) {
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+    // The proof key commits with the setup marker, from the token as provisioned.
+    bool prepared = gadget_commit_prepare(false, access_token, refresh_token);
+    bool completed = prepared && complete_setup_and_stop_ble("provision", session_generation);
+    gadget_commit_clear();
+    if (completed) mg_glue_setup_changed();
+#else
+    bool completed = complete_setup_and_stop_ble("provision", session_generation);
+#endif
+    if (!completed) {
         setup_fail_for_session("storage", "error_storage", session_generation);
         goto done;
     }
@@ -1240,6 +1396,7 @@ static void on_provision(const char *ssid, const char *password,
         esp_restart();
     }
 #endif
+#endif  // !CONFIG_MUSE_GADGET_BLE_STANDALONE
 
 done:
     operation_gate_give();
@@ -2090,13 +2247,29 @@ static void on_client_disconnected(void) {
     ble_server_begin_advertising();
 }
 
+#if CONFIG_MUSE_GADGET_BLE_STANDALONE
+// A BLE-only gadget has no Wi-Fi to scan (device_info says wifi: "none").
+static void on_wifi_scan_unsupported(void) {
+    uint32_t session_generation = link_pairing_session_generation();
+    if (!link_pairing_session_confirmed()
+        || !ble_server_send_pairing_status("error_wifi_unsupported", session_generation)) {
+        ble_server_send_status("error_encryption_required");
+    }
+}
+#endif
+
 static void start_ble_setup_server_if_needed(void) {
     if (s_ble_started) return;
 
     ble_callbacks_t cb = {
         .on_provision = on_provision,
+#if CONFIG_MUSE_GADGET_BLE_STANDALONE
+        .on_wifi_scan = on_wifi_scan_unsupported,
+        .on_ota = NULL,   // nothing updates a BLE-only gadget over the air
+#else
         .on_wifi_scan = on_wifi_scan,
         .on_ota = on_ble_ota,
+#endif
         .on_unpair = on_unpair,
         .on_get_device_info = on_get_device_info,
         .on_client_connected = on_client_connected,
@@ -2364,6 +2537,22 @@ void app_reset_setup_async(void) {
 }
 #endif  // CONFIG_MUSE_ENABLED
 
+#if CONFIG_MUSE_GADGET_BLE_AUDIO
+static void gadget_clear_task(void *arg) {
+    (void)arg;
+    reset_setup_from_control("token proof clear");
+    stack_monitor_record(NULL);
+    vTaskDelete(NULL);
+}
+
+void app_gadget_clear_setup(void) {
+    // Off the BLE worker: the reset waits for the operation gate.
+    if (xTaskCreate(gadget_clear_task, "mg_clear", 4096, NULL, 4, NULL) != pdPASS) {
+        atomic_store_explicit(&s_setup_reset_pending, true, memory_order_release);
+    }
+}
+#endif
+
 // ---- VM transport status forwarding ----------------------------------------
 
 static void ws_unpaired_task(void *arg) {
@@ -2482,39 +2671,77 @@ static void *psram_malloc(size_t sz) {
 
 #if CONFIG_MUSE_GADGET_BLE_STANDALONE
 // A BLE-only musegadgets gadget (CONFIG_MUSE_GADGET_BLE_STANDALONE). Wi-Fi,
-// setup pairing and its advertising, the Muse session, the tunnel and OTA
-// never start, so their RAM stays free; Link's BLE server runs with no setup
-// callbacks and only the musegadgets companion advertises.
+// the Muse session, the tunnel and OTA never start, so their RAM stays free.
+// Link's BLE setup still runs, without Wi-Fi: until the Muse app has set the
+// gadget up (token-only provision_v2, confirmed with the button) it
+// advertises setup, taking turns with the musegadgets UUID from the same
+// address; afterwards only the musegadgets UUID advertises.
 static void __attribute__((noreturn)) run_ble_standalone(void) {
     ESP_LOGI(TAG, "BLE-only musegadgets gadget: Wi-Fi and the Muse session stay off");
     // Nothing here can confirm an OTA image the way the control session does;
     // an image that got this far is good.
     esp_ota_mark_app_valid_cancel_rollback();
-    setup_stage_set("ble-only");
+
+    // Set up means the setup marker and the proof key, both committed by
+    // token-only provisioning. Anything less (a power cut midway, or a setup
+    // from Wi-Fi firmware, which left no key) can't pass the token proof and
+    // would refuse setup again, so start over.
+    bool setup_complete = config_setup_complete();
+    bool have_key = config_key_lookup("mg_proof_k") == CONFIG_KEY_FOUND;
+    bool partial = setup_complete
+        ? !have_key
+        : have_key || config_is_provisioned() || config_wifi_skipped();
+    if (partial) {
+        ESP_LOGW(TAG, "partial gadget setup at boot (setup=%d key=%d); clearing for a fresh setup",
+                 setup_complete, have_key);
+        if (!config_clear_setup()) {
+            ESP_LOGE(TAG, "partial setup deletion could not be verified");
+        }
+        setup_complete = false;
+        mg_glue_setup_changed();
+    }
+    s_setup_stage = setup_complete ? "done" : "idle";
     ui_set_ble("musegadgets");
-    ble_server_start(identity_ble_name(), NULL);
-    s_ble_started = true;
+    // Link's Wi-Fi setup paths stay out of this build (on_provision is token-only).
+    (void)on_wifi_scan;
+    (void)on_ble_ota;
+    (void)accept_pairing_credentials;
+    (void)complete_setup_and_stop_ble;
+    (void)remember_joined_wifi;
+    (void)start_wifi_join_ota_if_requested;
+    start_ble_setup_server_if_needed();
 #if !CONFIG_MUSE_ENABLED
-    // Muse boards read their own buttons; the Link button only talks here.
-    if (!button_init(NULL, NULL, NULL)) {
+    // Muse boards read their own buttons (the talk button confirms pairing).
+    if (!button_init(on_button_short_press, on_button_double_press, on_button_long_press)) {
         ESP_LOGW(TAG, "button init failed");
     }
 #endif
+    if (!setup_complete) {
+        open_setup_window("boot: not set up");
+        ESP_LOGI(TAG, "BLE setup advertising; press the button to confirm pairing");
+    } else {
+        ESP_LOGI(TAG, "set up; long-press reset (or the token proof's clear) to set up again");
+    }
 #if CONFIG_HOMEHUB_VOICE
     voice_init();
 #endif
     heap_snapshot("ble-only ready");
 
     stack_monitor_t stack = STACK_MONITOR_INIT;
-    for (;;) {
-        ESP_LOGI(HEARTBEAT_TAG, "hb t=%llds ble-only client=%s int=%uK/%uK min=%uK",
-                 esp_timer_get_time() / 1000000,
+    for (unsigned tick = 0;; tick++) {
+        if (atomic_exchange_explicit(&s_setup_reset_pending, false,
+                                     memory_order_acq_rel)) {
+            reset_setup_from_control("deferred setup reset");
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (tick % 30) continue;
+        ESP_LOGI(HEARTBEAT_TAG, "hb t=%llds ble-only setup=%s client=%s int=%uK/%uK min=%uK",
+                 esp_timer_get_time() / 1000000, s_setup_stage,
                  mg_ble_connected() ? "connected" : "none",
                  (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
                  (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
                  (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024));
         stack_monitor_record(&stack);
-        vTaskDelay(pdMS_TO_TICKS(30000));
     }
 }
 #endif
@@ -2565,6 +2792,11 @@ void app_run(void) {
 
     link_pairing_init(identity_node_id(), identity_device_id(), identity_mac(),
                       app_desc ? app_desc->version : "unknown", identity_sdk_token());
+#if CONFIG_MUSE_GADGET_BLE_STANDALONE
+    link_pairing_set_gadget(LINK_WIFI_NONE, true);
+#elif CONFIG_MUSE_GADGET_BLE_AUDIO
+    link_pairing_set_gadget(LINK_WIFI_OPTIONAL, true);
+#endif
     vm_api_set_sdk_token(identity_sdk_token());
 
     if (!led_status_init()) {
@@ -2610,10 +2842,14 @@ void app_run(void) {
         char probe_ssid[33] = {0};
         bool have_wifi = config_get_str("ssid", probe_ssid, sizeof(probe_ssid))
                          && probe_ssid[0];
-        if (!setup_complete && provisioned && have_wifi) {
+        // A gadget's token-only setup skipped Wi-Fi on purpose (written
+        // before its tokens, so a partial one never looks like a Wi-Fi pair).
+        bool wifi_skipped = config_wifi_skipped();
+        if (!setup_complete && provisioned && have_wifi && !wifi_skipped) {
             // Legacy pair from firmware predating the setup_complete marker.
             setup_complete = config_mark_setup_complete();
-        } else if (!setup_complete && (provisioned || (have_wifi && !WIFI_WITHOUT_PAIRING))) {
+        } else if (!setup_complete
+                   && (provisioned || wifi_skipped || (have_wifi && !WIFI_WITHOUT_PAIRING))) {
             // Muse joins Wi-Fi from its own settings before (or without)
             // pairing, so Wi-Fi alone isn't a half-written pair there.
             // Half-written pair (only one of Wi-Fi creds / tokens, no marker):
@@ -2623,7 +2859,7 @@ void app_run(void) {
             if (!config_clear_setup()) {
                 ESP_LOGE(TAG, "partial setup deletion could not be verified");
             }
-        } else if (setup_complete && !have_wifi && WIFI_WITHOUT_PAIRING) {
+        } else if (setup_complete && !have_wifi && WIFI_WITHOUT_PAIRING && !wifi_skipped) {
             // Muse can forget the network after pairing. With no Wi-Fi and
             // pairing refused once setup is done, the device would be stuck,
             // so start over and let the app pair it again.
@@ -2798,6 +3034,8 @@ void app_run(void) {
             ui_set_status("wifi_failed");
             led_status_set_state(LED_STATE_ERROR);
         }
+    } else if (setup_complete && config_wifi_skipped()) {
+        ESP_LOGI(TAG, "set up without Wi-Fi (gadget token-only setup)");
     } else {
         ESP_LOGI(TAG, "no wifi creds, waiting for BLE provision");
     }
