@@ -271,7 +271,9 @@ A few things worth knowing:
   the code on the screen and press the talk button. With
   `CONFIG_MUSE_GADGET_BLE_STANDALONE` a board is a BLE gadget only, with Wi-Fi
   off (the Waveshare C6 has a build for it), and `tools/mg_ble_client.py` tests
-  a gadget from your computer. The app can also play audio on a full-UI board's
+  a gadget from your computer, setup included: on full-UI boards `>pair.confirm`
+  on the USB console presses the button for it (`tools/mg_confirm.py`), so tests run
+  unattended. The app can also play audio on a full-UI board's
   speaker over BLE (`tools/mg_ble_client.py play` tries it). See
   [`components/muse_gadget_ble`](components/muse_gadget_ble/README.md).
 

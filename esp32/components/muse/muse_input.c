@@ -300,12 +300,26 @@ static void keyboard_buttons(unsigned ev)
     else if (ev & MUSE_BTN_ENTER) muse_menu_key(MUSE_MENU_SELECT);
 }
 
+/* "@pair.pending" on the console when Muse Link setup starts waiting for the
+ * confirmation press, once per wait: a test rig answers ">pair.confirm". */
+static void announce_confirm(bool confirm)
+{
+    static bool s_announced;
+    if (confirm && !s_announced) {
+        printf("@pair.pending\n");
+        fflush(stdout);
+    }
+    s_announced = confirm;
+}
+
 /* A pairing prompt wakes the screen and keeps it on; otherwise idle sleeps. */
 static void check_sleep(void)
 {
     muse_ble_status_t ble;
     muse_ble_status(&ble);
-    bool prompt = ble.passkey || muse_link_state() == MUSE_LINK_CONFIRM;
+    bool confirm = muse_link_state() == MUSE_LINK_CONFIRM;
+    announce_confirm(confirm);
+    bool prompt = ble.passkey || confirm;
     if (prompt) {
         set_asleep(false, "pairing");
         return;
@@ -665,6 +679,14 @@ static bool console_command(char *line, bool whole)
         s_nap_now = true;
         return true;
     }
+    if (!strcmp(line, "pair.confirm")) {
+        /* The talk button's press, for automated setup tests: the console is
+         * the USB cable, so physical access either way. Never push-to-talk. */
+        bool confirmed = muse_link_talk_press();
+        printf("@pair.confirm %s\n", confirmed ? "confirmed" : "none");
+        fflush(stdout);
+        return true;
+    }
 #if LV_USE_SNAPSHOT
     if (!strcmp(line, "ui.demo=1") || !strcmp(line, "ui.demo=0")) {
         muse_ui_bench_demo(!strcmp(line, "ui.demo=1"));
@@ -705,16 +727,19 @@ static bool console_command(char *line, bool whole)
 
 /*
  * Bench testing over the USB cable: 'd' / 'u' act as the talk button going
- * down / up, so the voice path can be driven without a finger on the button;
+ * down / up for push-to-talk only (they never confirm a pairing), so the
+ * voice path can be driven without a finger on the button;
  * 'm' plays a built-in MP3 through the reply decoder; 'a' / 's' press the
  * menu's Down / Select; 'p' sends a screenshot; 'z' / 'w' sleep and wake.
  * A line starting with '>' is a setup command, the same "key=value" text as
  * the BLE CMD characteristic, or one of the console's own: "status" prints
  * the device's state, "power" the battery meter (muse_battery.h) and
  * "power.reset" starts it over, "nap" sleeps and leaves Wi-Fi at once (as
- * two minutes asleep on battery would; 'w' rejoins), "face=" shows a face
- * (see set_face), and "chat=" sends a typed message to Hatch (see chat_line
- * and tools/muse/chat.py).
+ * two minutes asleep on battery would; 'w' rejoins), "pair.confirm" confirms
+ * a pending Muse Link setup as the talk button would (answering
+ * "@pair.confirm confirmed" or "none"; "@pair.pending" says one is waiting),
+ * "face=" shows a face (see set_face), and "chat=" sends a typed message to
+ * Hatch (see chat_line and tools/muse/chat.py).
  */
 static void serial_task(void *arg)
 {

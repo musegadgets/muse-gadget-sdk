@@ -34,7 +34,7 @@ security (mgcommands-secure) is not on this branch: it is a follow-up on
 |---|---|
 | `src/main.c` | Boot order, the app work queue, battery polling |
 | `src/mg_ota.c` | Firmware updates: MCUmgr hooks, confirming a test image, handing the clip slot to OTA and back |
-| `src/mg_bench.c` | Bench console (`overlay-bench.conf`): single-key commands on the console UART |
+| `src/mg_bench.c` | Bench console (`overlay-bench.conf`): single-key commands and `>pair.confirm` on the console UART |
 | `src/mg_core.c` | Protocol engine: commands, push-to-talk, settings and queue commands |
 | `src/mg_session.c` | Between GATT and the core: Control to the core, readiness |
 | `src/mg_setup.c` | Muse Link setup: the setup service's framing, dispatch, statuses, community pairing v5 phases and timeouts, button confirmation, get_device_info, token-only provision_v2 |
@@ -234,7 +234,8 @@ statuses, `link_pairing.c` session, `app.c` phases):
   `pairing_ready` (P-256 ECDH, the transcript from
   `esp32/main/pairing_transcript.c`, HKDF session secret, record keys and
   session id) -> encrypted `pairing_client_finished` -> `confirm_required`
-  -> a press of the talk button -> `pairing_confirmed`, carrying `sdk_token`
+  -> a press of the talk button (or the bench console's `>pair.confirm`)
+  -> `pairing_confirmed`, carrying `sdk_token`
   when `CONFIG_MG_SDK_TOKEN` is set (default empty; put yours in a local conf
   file, never a committed one). Records are AES-256-GCM with the ESP32's
   nonce, AAD and counter rules. Phases time out as on the ESP32: 60 s for
@@ -423,6 +424,17 @@ press and release the talk button through the real button path, `s` prints
 link state, push-to-talk, battery mV and %, image version and whether it's
 confirmed, and the queue (owner, clips, bytes). Normal builds keep the
 console output-only.
+
+For unattended setup tests it also takes the ESP32 console's line
+`>pair.confirm`: the button's setup press (`mg_setup_button()`, on the app
+work queue), never push-to-talk, answered `@pair.confirm confirmed` or
+`@pair.confirm none` when nothing waits; `@pair.pending` goes out when a
+confirmation starts waiting. `../esp32/tools/mg_confirm.py PORT` answers it
+while the Muse app or `mg_ble_client.py setup` drives the other side, or
+`mg_ble_client.py setup --confirm-serial PORT` does both (`esp32/AGENTS.md`,
+Automated setup tests). `../esp32/tests/test_mg_confirm.py` checks the tool
+and this side of it. `d` then `u` also confirms (it is the real button), but
+pushes to talk when nothing waits, so rigs use the line.
 
 ## Flash
 

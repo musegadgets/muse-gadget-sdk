@@ -22,6 +22,9 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#if defined(CONFIG_MG_BENCH)
+#include <zephyr/sys/printk.h>
+#endif
 
 #include "mg_app.h"
 #include "mg_core.h"
@@ -588,6 +591,10 @@ static void handle_client_finished(const struct mg_json_obj *o)
 	mg_led_set(MG_LED_PAIR_PENDING, true);
 	start_phase_timer(MG_SETUP_CONFIRM_MS);
 	LOG_INF("setup: press the button to confirm");
+#if defined(CONFIG_MG_BENCH)
+	/* For a test rig on the bench console, which answers ">pair.confirm". */
+	printk("@pair.pending\n");
+#endif
 }
 
 bool mg_setup_button(void)

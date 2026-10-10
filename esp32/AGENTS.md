@@ -402,6 +402,10 @@ Button (BOOT on the dev boards):
   setup isn't complete
 - **hold for 5 s**: reset setup (unpair and forget Wi-Fi)
 
+On boards with the full UI, a test rig confirms a pairing over the serial
+console instead of a finger on the button: see Automated setup tests under
+musegadgets BLE audio.
+
 The device advertises as `MuseGadget-XXXXXX` (`MuseGadget-Disp-XXXXXX` on the
 ideaspark, SenseCAP Indicator and reTerminal E1001 and E1002 overlays, `MuseGadget-ha-voice-XXXXXX` on the
 Voice PE, `MuseGadget-respeaker-XXXXXX` on the reSpeaker Lite). It uses
@@ -503,9 +507,10 @@ its constants.
   back, saving `mg_loopback.wav`), `ptt` (records
   each button press to a WAV, then sends responding and done and prints the
   face changes; `--no-states` skips that), `state <name>` (one
-  assistant_state), `setup [--access A --refresh R]` (Link setup as the Muse
-  app does it: community pairing v5, a press of the gadget's button, then
-  token-only `provision_v2` with the given or generated `bench-...` tokens;
+  assistant_state), `setup [--access A --refresh R] [--confirm-serial PORT]`
+  (Link setup as the Muse app does it: community pairing v5, a press of the
+  gadget's button, or `>pair.confirm` on its console with `--confirm-serial`,
+  then token-only `provision_v2` with the given or generated `bench-...` tokens;
   it keeps the proof key in `~/.mg_ble_client/`, mode 0600), `proof
   [--clear]` (the token proof with that key; `--clear` resets the gadget),
   `queue --download` and `log` (the Nordic UART
@@ -515,6 +520,29 @@ its constants.
   are refused, and runs the token proof when `setup` left a key for the
   gadget. On macOS the terminal needs Bluetooth permission; a sandboxed agent
   usually can't use Bluetooth.
+- **Automated setup tests:** Link setup waits up to 60 s for the button
+  after `confirm_required`; on a rig the USB serial console presses it, so
+  setup runs with nobody at the bench:
+  - Boards with the full UI (`components/muse`, the BLE-only C6 build
+    included) print `@pair.pending` when a confirmation starts waiting, and take the
+    console line `>pair.confirm`: the talk button's setup press
+    (`muse_link_talk_press()`), never push-to-talk. They answer
+    `@pair.confirm confirmed`, or `@pair.confirm none` when nothing waits.
+    The `d` / `u` keys are push-to-talk only and never confirm. The Zephyr
+    gadget's bench build takes the same line (`zephyr/AGENTS.md`, Bench build).
+  - `tools/mg_confirm.py PORT` watches a console for `@pair.pending` and
+    answers it (`--count 0 --secs N` keeps answering, `--log FILE` saves the
+    console, `--now` confirms what waits now); start it, then run the Muse
+    app or `tools/mg_ble_client.py setup` as usual. `mg_ble_client.py setup
+    --confirm-serial PORT` does both in one process. A sandboxed agent that
+    can use Bluetooth but not serial ports (or the reverse) runs the two as
+    separate processes.
+  - Both open the port without changing DTR or RTS, which would reset the
+    board, and reopen it if the board restarts.
+  - The console is the USB cable, so this asks for the same physical access
+    as the button, like the console's other setup commands. Light and
+    status-screen boards have no console input: their button stays the only
+    way to confirm.
 - **The Wi-Fi path stays as it was.** The push-to-talk loops only call into
   `mg_voice.h` under `#if CONFIG_MUSE_GADGET_BLE_AUDIO`.
 - **Test** with the host tests below: `test_mg_ble` (protocol, routing,
@@ -523,10 +551,13 @@ its constants.
   like `test_link_pairing_handshake`), `test_link_gadget_setup` (Wi-Fi-optional
   `provision_v2`, the token-only commit and its rollback, BLE-only boot
   recovery), `test_mg_codecs` (SBC and LC3 round trips), `test_mg_play`
-  (playback: resampler, ring, decoders) and `test_mg_ble_client` (the bench
+  (playback: resampler, ring, decoders), `test_mg_ble_client` (the bench
   client's parsing and decoding, its `play` flow control and token proof
   against the firmware's protocol code, and its Link setup crypto against
-  `tests/vectors/link_pairing_v5.json`, which needs `cryptography`). Build the
+  `tests/vectors/link_pairing_v5.json`, which needs `cryptography`; setup
+  with `--confirm-serial` against a console on a pty) and `test_mg_confirm`
+  (`tools/mg_confirm.py` against a simulated console, and `>pair.confirm` /
+  `@pair.pending` in both SDKs' firmware). Build the
   board with it on and one without it. BLE isn't emulated in QEMU; on a board,
   use `tools/mg_ble_client.py`.
 - **Vendored codecs** (`../xplat/libsbc`, `../xplat/liblc3`) are

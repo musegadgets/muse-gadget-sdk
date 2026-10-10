@@ -21,9 +21,10 @@
                                                          then drive the face: responding, done
     python3 tools/mg_ble_client.py state thinking         send one assistant_state (idle, thinking,
                                                          responding, done, error)
-    python3 tools/mg_ble_client.py setup [--access A --refresh R]
+    python3 tools/mg_ble_client.py setup [--access A --refresh R] [--confirm-serial PORT]
                                                          set a gadget up over Muse Link setup:
-                                                         pairing (press its button), token-only
+                                                         pairing (press its button, or have its
+                                                         console do it), token-only
                                                          provision_v2; keeps the proof key
     python3 tools/mg_ble_client.py proof [--clear]        the token proof with the kept key; --clear
                                                          then resets the gadget to setup
@@ -50,7 +51,9 @@ speaker it also plays a 2 s tone (as `play` does).
 setup over Muse Link), against a gadget advertising the Link setup service
 (not yet set up): device_info (it must say wifi optional or none), community
 pairing v5 (P-256 ECDH, HKDF-SHA256, AES-GCM records, as
-esp32/main/link_pairing.c), a press of the gadget's button, then token-only
+esp32/main/link_pairing.c), a press of the gadget's button (with
+--confirm-serial PORT, ">pair.confirm" on its serial console instead, so
+nobody has to be there: tools/mg_confirm.py), then token-only
 provision_v2 with --access/--refresh or generated bench-... test tokens. It
 prints the node_id and keeps K, the token proof key, in
 ~/.mg_ble_client/proof-<address>.json (mode 0600; MG_BLE_CLIENT_HOME moves
@@ -1465,8 +1468,10 @@ class PairingSession:
 
 
 async def setup_flow(link: SetupLink, access: str, refresh: str, prompt=print, session: PairingSession | None = None,
-                     confirm_timeout: float = PAIRING_CONFIRM_TIMEOUT_S + 5) -> dict:
-    """device_info, pairing, the button, then token-only provision_v2. Returns what setup stored."""
+                     confirm_timeout: float = PAIRING_CONFIRM_TIMEOUT_S + 5, confirm=None) -> dict:
+    """device_info, pairing, the button, then token-only provision_v2. Returns what setup stored.
+    `confirm`, if given, is awaited instead of prompting for the press (it presses the
+    button some other way, e.g. over the serial console) and returns False on failure."""
     await link.send({"action": "get_device_info"})
     info = await link.receive(10)
     if not isinstance(info, dict) or info.get("type") != "device_info":
@@ -1489,7 +1494,10 @@ async def setup_flow(link: SetupLink, access: str, refresh: str, prompt=print, s
     st = await s.status(10)
     if st.get("status") != "confirm_required":
         raise RuntimeError(f"expected confirm_required, got {st}")
-    prompt("press the gadget's button to confirm pairing (talk button on Muse boards)")
+    if confirm is None:
+        prompt("press the gadget's button to confirm pairing (talk button on Muse boards)")
+    elif not await confirm():
+        raise RuntimeError("the serial console didn't confirm the pairing")
     st = await s.status(confirm_timeout)
     if st.get("status") != "pairing_confirmed":
         raise RuntimeError(f"pairing not confirmed: {st.get('status')}")
@@ -1589,6 +1597,20 @@ async def find_setup(args):
     return sorted(hits, key=lambda h: -h[2])
 
 
+def serial_confirm(port: str | None):
+    """Presses the button over the gadget's serial console (tools/mg_confirm.py), or None."""
+    if not port:
+        return None
+
+    async def confirm() -> bool:
+        from mg_confirm import confirm_now
+
+        print(f">>> confirming over {port}")
+        return await asyncio.to_thread(confirm_now, port)
+
+    return confirm
+
+
 async def cmd_setup(args) -> int:
     from bleak import BleakClient
 
@@ -1609,7 +1631,8 @@ async def cmd_setup(args) -> int:
         link = SetupLink(client)
         await link.start()
         try:
-            got = await setup_flow(link, access, refresh, prompt=lambda m: print(f">>> {m}"))
+            got = await setup_flow(link, access, refresh, prompt=lambda m: print(f">>> {m}"),
+                                   confirm=serial_confirm(args.confirm_serial))
         except (RuntimeError, ValueError, asyncio.TimeoutError) as e:
             print(f"FAIL  {e or type(e).__name__}")
             return 1
@@ -2188,6 +2211,9 @@ def main(argv: list[str] | None = None) -> int:
     su = sub.add_parser("setup")
     su.add_argument("--access", help="the access token to provision (default: a generated bench-access-...)")
     su.add_argument("--refresh", help="the refresh token (default: a generated bench-refresh-...)")
+    su.add_argument("--confirm-serial", metavar="PORT",
+                    help="press the gadget's button over its serial console (>pair.confirm; tools/mg_confirm.py) "
+                         "instead of asking you to")
     pr = sub.add_parser("proof")
     pr.add_argument("--clear", action="store_true", help="after a match, have the gadget reset to setup")
     pr.add_argument("--verbose", action="store_true")

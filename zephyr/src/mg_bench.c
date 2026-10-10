@@ -22,7 +22,15 @@
  *   d / u   talk button down / up, through the real button path
  *   s       status: link, push-to-talk, battery, image, offline clips
  *   ?       this list
+ *
+ * and one line command, as on the ESP32's console:
+ *
+ *   >pair.confirm   confirm a pending Muse Link setup as the button would,
+ *                   answering "@pair.confirm confirmed" or "none" (never
+ *                   push-to-talk); "@pair.pending" says one is waiting
  */
+
+#include <string.h>
 
 #include <zephyr/console/console.h>
 #include <zephyr/kernel.h>
@@ -33,8 +41,10 @@
 #include "mg_core.h"
 #include "mg_session.h"
 #include "mg_settings.h"
+#include "mg_setup.h"
 #include "mg_setup_store.h"
 #include "mg_token_proof.h"
+#include "mg_transport.h"
 #if defined(CONFIG_MG_AUDIO_QUEUE)
 #include "mg_queue.h"
 #endif
@@ -71,6 +81,49 @@ static void status(void)
 #endif
 }
 
+#define BENCH_HELP "bench: keys d (talk down), u (talk up), s (status); line >pair.confirm\n"
+
+/* Setup state lives on the app work queue. */
+static void confirm_fn(struct k_work *w)
+{
+	ARG_UNUSED(w);
+	bool confirmed = mg_setup_confirm_pending() && mg_setup_button();
+
+	printk("@pair.confirm %s\n", confirmed ? "confirmed" : "none");
+}
+
+static K_WORK_DEFINE(confirm_work, confirm_fn);
+
+/* The rest of a '>' line; an unknown or too long one is reported. */
+static void line_command(void)
+{
+	char line[24];
+	size_t len = 0;
+	bool whole = true;
+
+	for (;;) {
+		int ch = console_getchar();
+
+		if (ch == '\n') {
+			break;
+		}
+		if (ch == '\r') {
+			continue;
+		}
+		if (len < sizeof(line) - 1) {
+			line[len++] = (char)ch;
+		} else {
+			whole = false;
+		}
+	}
+	line[len] = '\0';
+	if (whole && strcmp(line, "pair.confirm") == 0) {
+		k_work_submit_to_queue(mg_app_wq(), &confirm_work);
+	} else {
+		printk("@error unknown command\n");
+	}
+}
+
 static void bench_fn(void *a, void *b, void *c)
 {
 	ARG_UNUSED(a);
@@ -78,7 +131,7 @@ static void bench_fn(void *a, void *b, void *c)
 	ARG_UNUSED(c);
 
 	(void)console_init();
-	printk("bench: keys d (talk down), u (talk up), s (status)\n");
+	printk(BENCH_HELP);
 	for (;;) {
 		int ch = console_getchar();
 
@@ -94,9 +147,12 @@ static void bench_fn(void *a, void *b, void *c)
 		case 's':
 			status();
 			break;
+		case '>':
+			line_command();
+			break;
 		case '?':
 		case 'h':
-			printk("bench: keys d (talk down), u (talk up), s (status)\n");
+			printk(BENCH_HELP);
 			break;
 		default:
 			break;

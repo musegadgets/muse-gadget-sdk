@@ -128,7 +128,9 @@ without it. Flash through the XIAO's on-board CMSIS-DAP probe (its SAMD11)
 with pyOCD or OpenOCD, from the one padded hex `tools/flash_hex.py` makes
 ([`AGENTS.md`](AGENTS.md) has the commands).
 Add `-- -DEXTRA_CONF_FILE=overlay-bench.conf` for a console that takes
-single-key commands (talk button, status).
+single-key commands (talk button, status) and `>pair.confirm`, which
+confirms the Muse app's setup instead of a press, for unattended tests
+(`../esp32/tools/mg_confirm.py`).
 
 Images are signed with MCUboot's development key, which anyone has: build
 production firmware with your own (`SB_CONFIG_BOOT_SIGNATURE_KEY_FILE`).

@@ -342,6 +342,42 @@ class MgBleClientTest(unittest.TestCase):
         self.assertEqual(dev.got["refresh_token"], "bench-refresh-1")
         self.assertEqual((got["node_id"], got["wifi"], got["mgcommands"]), ("homelink-000001", "none", True))
         self.assertEqual(got["proof_key"], C.proof_key("bench-access-1", "homelink-000001"))
+
+        # --confirm-serial: the console presses the button and nobody is prompted.
+        import tty
+
+        master, slave = os.openpty()
+        tty.setraw(slave)
+        self.addCleanup(os.close, slave)
+        self.addCleanup(os.close, master)
+        seen = []
+
+        def console():
+            line = os.read(master, 64)
+            seen.append(line)
+            os.write(master, b"@pair.confirm confirmed\n")
+
+        async def run_serial(dev):
+            link = C.SetupLink(dev)
+            await link.start()
+            confirm = C.serial_confirm(os.ttyname(slave))
+
+            async def press_over_serial():
+                ok = await confirm()
+                if ok:
+                    dev.status("pairing_confirmed")   # what the press does on the device
+                return ok
+
+            return await C.setup_flow(link, "bench-access-2", "bench-refresh-2",
+                                      prompt=lambda m: self.fail(f"prompted: {m}"), confirm=press_over_serial)
+
+        import threading
+        threading.Thread(target=console, daemon=True).start()
+        dev = Device()
+        got = asyncio.run(run_serial(dev))
+        self.assertEqual(seen, [b">pair.confirm\n"])
+        self.assertEqual(dev.got["access_token"], "bench-access-2")
+        self.assertIsNone(C.serial_confirm(None))
         # A device that needs Wi-Fi isn't set up token-only.
         with self.assertRaises(RuntimeError):
             asyncio.run(run(Device(wifi="required")))

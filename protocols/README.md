@@ -73,3 +73,11 @@ token proof on every musegadgets connection. Apps key K by the BLE
 peripheral they ran Link setup with, so gadget firmware must advertise Link
 setup and the musegadgets service from the same identity address (ESP32
 uses one public-address advertiser that takes turns between the two UUIDs).
+
+Automated tests have nobody to press the button. The firmware takes the
+press on its USB serial console, which asks for the same physical access:
+it prints `@pair.pending` when a confirmation starts waiting and confirms on
+the line `>pair.confirm` (answering `@pair.confirm confirmed`, or `none`).
+ESP32 boards with the Muse UI and the Zephyr bench build have it;
+`esp32/tools/mg_confirm.py` answers it during setup (`esp32/AGENTS.md`,
+Automated setup tests). It changes nothing on the air.
